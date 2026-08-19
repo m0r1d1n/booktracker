@@ -16,9 +16,14 @@ ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
 #### Run it
 
 Normal docker compose. 
+
 I use port tcp\8000.
 
-## Using it
+
+
+Everything below here is AI drivel. 
+
+#### Using it
 
 - **Shelf** — a visual bookshelf of your books, spine art from cover images, grouped
   into labelled sections by **location**. Filter to one location or one genre/tag,
@@ -66,7 +71,7 @@ I use port tcp\8000.
       "read" shelf) means "read", then a "to-read"/"want" shelf means "unread".
     - `tags`/`Bookshelves` columns become the book's tags (genres).
 
-## Notes on bulk import at ~1000-book scale
+#### Notes on bulk import at ~1000-book scale
 
 The import endpoint looks up ISBNs one at a time with a short pause between each
 call, to stay well within the free, key-less usage of Open Library/Google Books.
@@ -74,7 +79,7 @@ For very large batches (many hundreds), split the paste into a few chunks of a
 few hundred ISBNs each rather than one giant paste — the request will otherwise
 be open for several minutes, which some reverse proxies time out.
 
-## Project layout
+#### Project layout
 
 ```
 booktracker/
@@ -93,7 +98,7 @@ booktracker/
 └── docker-compose.yml
 ```
 
-## Extending later
+#### Extending later
 - The API is at `/api/*` (e.g. `/api/books`, `/api/import`, `/api/reviews`,
   `/api/tags`, `/api/export/csv`) if you ever want to script imports or build
   another client against it.
