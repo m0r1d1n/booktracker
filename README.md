@@ -1,7 +1,9 @@
 ### Booktracker — a self-hosted personal library tracker
 
 A vibe coded piece of trash I whipped up on clade to show someone how AI worked.
+
 It is a mimicry of Jelu, which is the app I still continue to use. 
+
 
 A small Docker app for cataloguing ~1000 books: ownership, reading status/dates,
 ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
