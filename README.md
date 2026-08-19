@@ -1,6 +1,6 @@
 ### Booktracker — a self-hosted personal library tracker
 
-A vibe coded piece of trash I whipped up on clade to show someone how AI worked.
+A vibe coded piece of trash I whipped up on claude to show someone how AI worked.
 
 It is a mimicry of Jelu, which is the app I still continue to use. 
 
