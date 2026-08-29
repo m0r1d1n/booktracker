@@ -1,5 +1,7 @@
 # The Stacks — a self-hosted personal library tracker
 
+Note: Vibecoded for fun. Use at own risk. 
+
 A small Docker app for cataloguing ~1000 books: ownership, reading status/dates,
 ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
 
