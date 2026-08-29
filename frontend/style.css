@@ -88,7 +88,31 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px 32px 80px; }
 .view { display: none; }
 .view.active { display: block; }
 
-.view-controls { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.view-controls { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+
+.view-mode-toggle {
+  display: flex;
+  gap: 2px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(193,150,63,0.35);
+  border-radius: 7px;
+  padding: 3px;
+  margin-left: auto;
+}
+.view-mode-toggle .mode-btn {
+  background: transparent;
+  border: none;
+  color: var(--parchment-dim);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.view-mode-toggle .mode-btn:hover { color: var(--parchment); }
+.view-mode-toggle .mode-btn.active { background: var(--brass); color: var(--ink); }
 input[type="search"], select, textarea {
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(193,150,63,0.4);
@@ -177,6 +201,43 @@ input[type="search"] { flex: 1; min-width: 200px; }
   overflow: hidden;
 }
 .spine:hover { transform: translateY(-10px); z-index: 2; }
+
+/* Full-cover mode: wider, uncropped, whole-cover display instead of a narrow
+   spine sliver. Row-fitting math in app.js uses matching dimensions so the
+   shelf still spans edge-to-edge in either mode. */
+.spine.cover-mode {
+  width: 96px;
+  min-height: 148px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3), 2px 6px 10px rgba(0,0,0,0.4);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-color: rgba(0,0,0,0.3);
+}
+.spine.cover-mode.no-cover {
+  background: linear-gradient(160deg, var(--forest), #2c4238);
+}
+.spine.cover-mode .spine-title {
+  writing-mode: horizontal-tb;
+  transform: none;
+  font-size: 12px;
+  text-align: center;
+  padding: 10px;
+  white-space: normal;
+  max-height: 100%;
+  overflow: hidden;
+}
+.spine.cover-mode.status-read::before,
+.spine.cover-mode.status-reading::before,
+.spine.cover-mode.status-planning::before,
+.spine.cover-mode.status-unread::before {
+  top: 8px; right: 8px;
+  width: 8px; height: 8px;
+}
+
 .spine .spine-title {
   font-family: var(--font-mono);
   font-size: 9px;
@@ -194,6 +255,7 @@ input[type="search"] { flex: 1; min-width: 200px; }
 }
 .spine.status-read::before,
 .spine.status-reading::before,
+.spine.status-planning::before,
 .spine.status-unread::before {
   content: "";
   position: absolute;
@@ -203,6 +265,7 @@ input[type="search"] { flex: 1; min-width: 200px; }
 }
 .spine.status-read::before { background: var(--brass-bright); box-shadow: 0 0 4px var(--brass-bright); }
 .spine.status-reading::before { background: #7fb08a; }
+.spine.status-planning::before { background: #7f9ab0; }
 .spine.status-unread::before { background: rgba(255,255,255,0.25); }
 
 .shelf-heading {
@@ -266,6 +329,7 @@ input[type="search"] { flex: 1; min-width: 200px; }
   text-transform: capitalize;
 }
 .status-pill.unread { background: rgba(255,255,255,0.1); color: var(--parchment-dim); }
+.status-pill.planning { background: rgba(193,150,63,0.18); color: var(--brass-bright); }
 .status-pill.reading { background: rgba(127,176,138,0.2); color: #9fcaa8; }
 .status-pill.read { background: rgba(220,179,92,0.2); color: var(--brass-bright); }
 .status-pill.dnf { background: rgba(138,51,36,0.25); color: #d98a78; }

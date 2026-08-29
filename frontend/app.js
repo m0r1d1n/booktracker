@@ -3,8 +3,21 @@ let currentBooks = [];
 let currentModalBookId = null;
 let knownLocations = [];
 let knownTags = [];
+let knownSeries = [];
 let selectedBookIds = new Set();
 let shelfShuffled = true; // shelf opens in random order by default
+let shelfCoverMode = localStorage.getItem("shelfCoverMode") === "full" ? "full" : "spine";
+let shelfGroupMode = ["location", "series", "none"].includes(localStorage.getItem("shelfGroupMode"))
+  ? localStorage.getItem("shelfGroupMode")
+  : "location";
+
+const STATUS_LABELS = {
+  unread: "Unread",
+  planning: "Planning to read",
+  reading: "Reading",
+  read: "Read",
+  dnf: "Did not finish",
+};
 
 // ---------- helpers ----------
 async function api(path, opts = {}) {
@@ -53,6 +66,8 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   if (btn.dataset.view === "shelf") loadShelf();
   if (btn.dataset.view === "library") loadLibrary();
   if (btn.dataset.view === "reviews") loadReviews();
+  if (btn.dataset.view === "toread") loadToRead();
+  if (btn.dataset.view === "toread") loadToRead();
 });
 
 // ---------- stats ----------
@@ -94,16 +109,45 @@ async function loadTags() {
   });
 }
 
+// ---------- series ----------
+async function loadSeries() {
+  knownSeries = await api("/series");
+  const datalist = document.getElementById("series-list");
+  datalist.innerHTML = knownSeries.map((s) => `<option value="${escapeHtml(s)}"></option>`).join("");
+}
+
 // ---------- shelf view ----------
-const PER_SHELF = 18;
+const SPINE_WIDTH = 34;
+const SPINE_GAP = 3;
+const COVER_WIDTH = 96;
+const COVER_GAP = 10;
+const SHELF_ROW_H_PADDING = 36; // 18px left + 18px right, from .shelf-row padding
+
+function currentItemDims() {
+  return shelfCoverMode === "full"
+    ? { width: COVER_WIDTH, gap: COVER_GAP }
+    : { width: SPINE_WIDTH, gap: SPINE_GAP };
+}
+
+function spinesPerRow(container) {
+  const width = container.clientWidth || document.getElementById("shelf-container").clientWidth || 900;
+  const { width: itemWidth, gap } = currentItemDims();
+  const available = Math.max(width - SHELF_ROW_H_PADDING, itemWidth);
+  const perItem = itemWidth + gap;
+  return Math.max(4, Math.floor(available / perItem));
+}
 
 function buildShelfRows(container, books) {
-  for (let i = 0; i < books.length; i += PER_SHELF) {
+  const perRow = spinesPerRow(container);
+  const { gap } = currentItemDims();
+  for (let i = 0; i < books.length; i += perRow) {
     const row = document.createElement("div");
     row.className = "shelf-row";
-    books.slice(i, i + PER_SHELF).forEach((b) => {
+    row.style.gap = gap + "px";
+    books.slice(i, i + perRow).forEach((b) => {
       const spine = document.createElement("div");
-      spine.className = "spine status-" + b.status + (b.cover_url ? "" : " no-cover");
+      const coverClass = shelfCoverMode === "full" ? " cover-mode" : "";
+      spine.className = "spine status-" + b.status + (b.cover_url ? "" : " no-cover") + coverClass;
       if (b.cover_url) spine.style.backgroundImage = `url("${b.cover_url}")`;
       spine.title = `${b.title}${b.authors ? " — " + b.authors : ""}${b.location ? " · " + b.location : ""}`;
       if (!b.cover_url) {
@@ -115,6 +159,21 @@ function buildShelfRows(container, books) {
     container.appendChild(row);
   }
 }
+
+document.querySelectorAll("#shelf-mode-toggle .mode-btn").forEach((btn) => {
+  if (btn.dataset.mode === shelfCoverMode) btn.classList.add("active");
+  else btn.classList.remove("active");
+  btn.addEventListener("click", () => {
+    shelfCoverMode = btn.dataset.mode;
+    localStorage.setItem("shelfCoverMode", shelfCoverMode);
+    document.querySelectorAll("#shelf-mode-toggle .mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    loadShelf();
+  });
+});
+
+window.addEventListener("resize", debounce(() => {
+  if (document.getElementById("view-shelf").classList.contains("active")) loadShelf();
+}, 250));
 
 async function loadShelf() {
   const container = document.getElementById("shelf-container");
@@ -132,7 +191,7 @@ async function loadShelf() {
   currentBooks = books;
 
   if (books.length === 0) {
-    container.innerHTML = '<p class="empty-note">No books here yet. Add some from the Library tab or the Accession tab.</p>';
+    container.innerHTML = '<p class="empty-note">No books here yet. Add some from the Edit tab or the Accession tab.</p>';
     return;
   }
 
@@ -150,20 +209,30 @@ async function loadShelf() {
     return;
   }
 
-  // group by location, alphabetically, with "Unsorted" last; order within
-  // each group follows the current shuffle/sort toggle above
+  if (shelfGroupMode === "none") {
+    buildShelfRows(container, books);
+    return;
+  }
+
+  // group by location or series, alphabetically, with the "none" bucket
+  // last; order within each group follows the current shuffle/sort toggle
+  const getKey = shelfGroupMode === "series"
+    ? (b) => b.series || "__none__"
+    : (b) => b.location || "__none__";
+  const noneLabel = shelfGroupMode === "series" ? "No series" : "Unsorted";
+
   const groups = {};
   books.forEach((b) => {
-    const key = b.location || "__unsorted__";
+    const key = getKey(b);
     (groups[key] = groups[key] || []).push(b);
   });
-  const keys = Object.keys(groups).filter((k) => k !== "__unsorted__").sort();
-  if (groups["__unsorted__"]) keys.push("__unsorted__");
+  const keys = Object.keys(groups).filter((k) => k !== "__none__").sort();
+  if (groups["__none__"]) keys.push("__none__");
 
   keys.forEach((key) => {
     const heading = document.createElement("div");
     heading.className = "shelf-heading";
-    heading.textContent = key === "__unsorted__" ? "Unsorted" : key;
+    heading.textContent = key === "__none__" ? noneLabel : key;
     container.appendChild(heading);
     buildShelfRows(container, groups[key]);
   });
@@ -173,6 +242,16 @@ document.getElementById("shelf-search").addEventListener("input", debounce(loadS
 document.getElementById("shelf-filter").addEventListener("change", loadShelf);
 document.getElementById("shelf-location-filter").addEventListener("change", loadShelf);
 document.getElementById("shelf-tag-filter").addEventListener("change", loadShelf);
+document.querySelectorAll("#shelf-group-toggle .mode-btn").forEach((btn) => {
+  if (btn.dataset.group === shelfGroupMode) btn.classList.add("active");
+  else btn.classList.remove("active");
+  btn.addEventListener("click", () => {
+    shelfGroupMode = btn.dataset.group;
+    localStorage.setItem("shelfGroupMode", shelfGroupMode);
+    document.querySelectorAll("#shelf-group-toggle .mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    loadShelf();
+  });
+});
 document.getElementById("shelf-shuffle-btn").addEventListener("click", () => {
   shelfShuffled = !shelfShuffled;
   document.getElementById("shelf-shuffle-btn").textContent = shelfShuffled ? "Sort A–Z" : "🔀 Shuffle";
@@ -200,6 +279,9 @@ async function loadLibrary() {
   if (location) {
     books = location === "__none__" ? books.filter((b) => !b.location) : books.filter((b) => b.location === location);
   }
+  if (document.getElementById("library-missing-cover").checked) {
+    books = books.filter((b) => !b.cover_url);
+  }
   currentBooks = books;
 
   if (books.length === 0) {
@@ -215,7 +297,7 @@ async function loadLibrary() {
       <td>${escapeHtml(b.authors || "—")}</td>
       <td>${escapeHtml(b.location || "—")}</td>
       <td class="tags-cell">${(b.tags || []).map((t) => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("") || "—"}</td>
-      <td><span class="status-pill ${b.status}">${b.status}</span></td>
+      <td><span class="status-pill ${b.status}">${STATUS_LABELS[b.status] || b.status}</span></td>
       <td>${b.date_started || "—"}</td>
       <td>${b.date_finished || "—"}</td>
       <td>${stars(b.rating)}</td>
@@ -294,6 +376,7 @@ document.getElementById("library-search").addEventListener("input", debounce(loa
 document.getElementById("library-filter").addEventListener("change", loadLibrary);
 document.getElementById("library-location-filter").addEventListener("change", loadLibrary);
 document.getElementById("library-tag-filter").addEventListener("change", loadLibrary);
+document.getElementById("library-missing-cover").addEventListener("change", loadLibrary);
 document.getElementById("add-book-btn").addEventListener("click", () => openBookModal(null));
 
 // ---------- reviews view ----------
@@ -316,6 +399,45 @@ async function loadReviews() {
     el.addEventListener("click", () => openBookModal(Number(el.dataset.id), "review"))
   );
 }
+
+// ---------- to read view ----------
+async function loadToRead() {
+  const body = document.getElementById("toread-body");
+  body.innerHTML = '<tr><td colspan="5" class="empty-note">Loading…</td></tr>';
+  const search = document.getElementById("toread-search").value.trim().toLowerCase();
+
+  const [reading, planning] = await Promise.all([
+    api("/books?status=reading"),
+    api("/books?status=planning"),
+  ]);
+  let books = [...reading, ...planning].sort((a, b) => a.title.localeCompare(b.title));
+  if (search) {
+    books = books.filter((b) =>
+      b.title.toLowerCase().includes(search) || (b.authors || "").toLowerCase().includes(search)
+    );
+  }
+
+  if (books.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" class="empty-note">Nothing here yet — mark a book Reading or Planning to Read from its edit modal.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = books.map((b) => `
+    <tr>
+      <td class="title-cell" data-id="${b.id}">${escapeHtml(b.title)}</td>
+      <td>${escapeHtml(b.authors || "—")}</td>
+      <td><span class="status-pill ${b.status}">${STATUS_LABELS[b.status] || b.status}</span></td>
+      <td class="tags-cell">${(b.tags || []).map((t) => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("") || "—"}</td>
+      <td>${escapeHtml(b.location || "—")}</td>
+    </tr>
+  `).join("");
+
+  body.querySelectorAll(".title-cell").forEach((el) =>
+    el.addEventListener("click", () => openBookModal(Number(el.dataset.id)))
+  );
+}
+
+document.getElementById("toread-search").addEventListener("input", debounce(loadToRead, 300));
 
 // ---------- import view ----------
 document.getElementById("import-btn").addEventListener("click", async () => {
@@ -385,11 +507,18 @@ document.getElementById("csv-import-btn").addEventListener("click", async () => 
     const lines = [];
     result.updated.forEach((b) => lines.push(`<div class="result-line added">✓ Updated — ${escapeHtml(b.title)} (${b.status}${b.date_finished ? ", finished " + b.date_finished : ""})</div>`));
     result.added.forEach((b) => lines.push(`<div class="result-line added">✓ Added — ${escapeHtml(b.title)}</div>`));
-    result.skipped.forEach((s) => lines.push(`<div class="result-line notfound">✗ Skipped — ${s.reason}</div>`));
+    (result.ambiguous || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Ambiguous — ${escapeHtml(r.reason)} (${escapeHtml(r.row.Title || "")})</div>`));
+    (result.mismatched || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Mismatch — ${escapeHtml(r.reason)}</div>`));
+    (result.skipped || []).forEach((s) => lines.push(`<div class="result-line notfound">✗ Skipped — ${s.reason}</div>`));
+    if (result.isbn_corrupted_count) {
+      lines.unshift(`<div class="result-line notfound">⚠ ${result.isbn_corrupted_count} row(s) had an ISBN mangled into scientific notation (likely from opening the CSV in Excel/Sheets) — those ISBNs were left untouched rather than overwritten with corrupted data. Matching still worked via the ID column.</div>`);
+    }
     resultsEl.innerHTML = lines.join("") || '<div class="result-line dup">No rows processed.</div>';
     fileInput.value = "";
     loadStats();
     loadLocations();
+    loadTags();
+    loadSeries();
   } catch (err) {
     progress.textContent = "Import failed: " + err.message;
   } finally {
@@ -442,6 +571,56 @@ document.getElementById("export-csv-btn").addEventListener("click", () => {
   window.location.href = API + "/export/csv";
 });
 
+// ---------- ZIP export (includes cover images) ----------
+document.getElementById("export-zip-btn").addEventListener("click", () => {
+  window.location.href = API + "/export/zip";
+});
+
+// ---------- ZIP restore ----------
+document.getElementById("zip-import-btn").addEventListener("click", async () => {
+  const fileInput = document.getElementById("zip-file-input");
+  const file = fileInput.files[0];
+  if (!file) { alert("Choose a .zip backup file first."); return; }
+  const progress = document.getElementById("zip-import-progress");
+  const resultsEl = document.getElementById("zip-import-results");
+  const btn = document.getElementById("zip-import-btn");
+
+  const form = new FormData();
+  form.append("file", file);
+
+  btn.disabled = true;
+  progress.textContent = "Restoring… this can take a moment for large backups.";
+  resultsEl.innerHTML = "";
+
+  try {
+    const res = await fetch(API + "/import/zip", { method: "POST", body: form });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.detail || res.statusText);
+    }
+    const result = await res.json();
+    progress.textContent = `Done — ${result.covers_restored} cover image(s) restored.`;
+    const lines = [];
+    result.updated.forEach((b) => lines.push(`<div class="result-line added">✓ Updated — ${escapeHtml(b.title)}</div>`));
+    result.added.forEach((b) => lines.push(`<div class="result-line added">✓ Added — ${escapeHtml(b.title)}</div>`));
+    (result.mismatched || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Mismatch — ${escapeHtml(r.reason)}</div>`));
+    (result.ambiguous || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Ambiguous — ${escapeHtml(r.reason)}</div>`));
+    if (result.isbn_corrupted_count) {
+      lines.unshift(`<div class="result-line notfound">⚠ ${result.isbn_corrupted_count} row(s) had an ISBN mangled into scientific notation (likely from opening the CSV in Excel/Sheets) — those ISBNs were left untouched rather than overwritten with corrupted data. Matching still worked via the ID column.</div>`);
+    }
+    resultsEl.innerHTML = lines.join("") || '<div class="result-line dup">No rows processed.</div>';
+    fileInput.value = "";
+    loadStats();
+    loadLocations();
+    loadTags();
+    loadSeries();
+  } catch (err) {
+    progress.textContent = "Restore failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ---------- modal ----------
 const modalOverlay = document.getElementById("book-modal");
 const modalBody = document.getElementById("modal-body");
@@ -460,9 +639,11 @@ function refreshCurrentView() {
   if (active === "shelf") loadShelf();
   if (active === "library") loadLibrary();
   if (active === "reviews") loadReviews();
+  if (active === "toread") loadToRead();
   loadStats();
   loadLocations();
   loadTags();
+  loadSeries();
 }
 
 async function openBookModal(bookId, initialTab = "details") {
@@ -502,12 +683,16 @@ function renderAddBookForm() {
       <label>Location
         <input type="text" id="f-location" list="location-list" placeholder="e.g. Living Room — Shelf 3" />
       </label>
+      <label>Series
+        <input type="text" id="f-series" list="series-list" placeholder="e.g. Mistborn" />
+      </label>
       <label class="full">Genres / tags
         <input type="text" id="f-tags" list="tag-list" placeholder="Fantasy, Adult, Comics" />
       </label>
       <label>Status
         <select id="f-status">
           <option value="unread">Unread</option>
+          <option value="planning">Planning to read</option>
           <option value="reading">Reading</option>
           <option value="read">Read</option>
           <option value="dnf">Did not finish</option>
@@ -530,6 +715,7 @@ function renderAddBookForm() {
       document.getElementById("f-title").value = meta.title || "";
       document.getElementById("f-authors").value = meta.authors || "";
       document.getElementById("f-cover").value = meta.cover_url || "";
+      if (meta.series) document.getElementById("f-series").value = meta.series;
     } catch (err) {
       alert("Lookup failed: " + err.message);
     } finally {
@@ -546,6 +732,7 @@ function renderAddBookForm() {
       authors: document.getElementById("f-authors").value.trim() || null,
       cover_url: document.getElementById("f-cover").value.trim() || null,
       location: document.getElementById("f-location").value.trim() || null,
+      series: document.getElementById("f-series").value.trim() || null,
       tags: document.getElementById("f-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
       status: document.getElementById("f-status").value,
       owned: true,
@@ -578,15 +765,32 @@ function renderBookModal(book, review, initialTab) {
 
     <div id="mtab-details" class="mtab-pane">
       <div class="form-grid">
+        <label class="full">Title
+          <input type="text" id="e-title" value="${escapeHtml(book.title || "")}" />
+        </label>
+        <label class="full">Author(s)
+          <input type="text" id="e-authors" value="${escapeHtml(book.authors || "")}" placeholder="e.g. Brandon Sanderson" />
+        </label>
         <label class="full">Location
           <input type="text" id="e-location" list="location-list" value="${escapeHtml(book.location || "")}" placeholder="e.g. Living Room — Shelf 3" />
+        </label>
+        <label class="full">Series
+          <input type="text" id="e-series" list="series-list" value="${escapeHtml(book.series || "")}" placeholder="e.g. Mistborn" />
+        </label>
+        <label class="full">Cover
+          <div style="display:flex; align-items:center; gap:10px;">
+            <input type="file" id="e-cover-file" accept="image/jpeg,image/png,image/webp,image/gif" style="flex:1;" />
+            <button class="btn-secondary" id="e-cover-upload-btn" type="button">Upload</button>
+            ${book.cover_url ? `<button class="btn-danger" id="e-cover-remove-btn" type="button">Remove</button>` : ""}
+          </div>
+          <span id="e-cover-status" style="font-size:12px; color:var(--parchment-dim); margin-top:4px;">JPG, PNG, WEBP, or GIF — up to 12 MB</span>
         </label>
         <label class="full">Genres / tags
           <input type="text" id="e-tags" list="tag-list" value="${escapeHtml((book.tags || []).join(", "))}" placeholder="Fantasy, Adult, Comics" />
         </label>
         <label>Status
           <select id="e-status">
-            ${["unread", "reading", "read", "dnf"].map((s) => `<option value="${s}" ${book.status === s ? "selected" : ""}>${s}</option>`).join("")}
+            ${["unread", "planning", "reading", "read", "dnf"].map((s) => `<option value="${s}" ${book.status === s ? "selected" : ""}>${STATUS_LABELS[s]}</option>`).join("")}
           </select>
         </label>
         <label>Owned
@@ -637,6 +841,40 @@ function renderBookModal(book, review, initialTab) {
   );
   if (initialTab === "review") modalBody.querySelector('[data-mtab="review"]').click();
 
+  // cover upload / removal
+  document.getElementById("e-cover-upload-btn").addEventListener("click", async () => {
+    const fileInput = document.getElementById("e-cover-file");
+    const file = fileInput.files[0];
+    if (!file) { alert("Choose an image file first."); return; }
+    const status = document.getElementById("e-cover-status");
+    status.textContent = "Uploading…";
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await fetch(`${API}/books/${book.id}/cover`, { method: "POST", body: form });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail || res.statusText);
+      }
+      const updated = await res.json();
+      status.textContent = "Cover updated.";
+      book.cover_url = updated.cover_url;
+      renderBookModal(book, review, "details");
+    } catch (err) {
+      status.textContent = "Upload failed: " + err.message;
+    }
+  });
+
+  const removeCoverBtn = document.getElementById("e-cover-remove-btn");
+  if (removeCoverBtn) {
+    removeCoverBtn.addEventListener("click", async () => {
+      if (!confirm("Remove this book's cover image?")) return;
+      const updated = await api(`/books/${book.id}/cover`, { method: "DELETE" });
+      book.cover_url = updated.cover_url;
+      renderBookModal(book, review, "details");
+    });
+  }
+
   // star rating
   const ratingEl = document.getElementById("e-rating");
   ratingEl.querySelectorAll("span").forEach((s) =>
@@ -649,13 +887,18 @@ function renderBookModal(book, review, initialTab) {
   );
 
   document.getElementById("save-book-btn").addEventListener("click", async () => {
+    const title = document.getElementById("e-title").value.trim();
+    if (!title) { alert("Title is required."); return; }
     const payload = {
+      title,
+      authors: document.getElementById("e-authors").value.trim() || null,
       status: document.getElementById("e-status").value,
       owned: document.getElementById("e-owned").value === "true",
       date_started: document.getElementById("e-started").value || null,
       date_finished: document.getElementById("e-finished").value || null,
       rating: Number(ratingEl.dataset.value) || null,
       location: document.getElementById("e-location").value.trim() || null,
+      series: document.getElementById("e-series").value.trim() || null,
       tags: document.getElementById("e-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
     };
     await api(`/books/${book.id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -682,4 +925,5 @@ function renderBookModal(book, review, initialTab) {
 loadStats();
 loadLocations();
 loadTags();
+loadSeries();
 loadShelf();

@@ -10,7 +10,6 @@ from sqlalchemy import (
     DateTime,
     Text,
     ForeignKey,
-    Enum,
     Table,
 )
 from sqlalchemy.orm import relationship
@@ -20,6 +19,7 @@ from database import Base
 
 class ReadStatus(str, enum.Enum):
     unread = "unread"
+    planning = "planning"
     reading = "reading"
     read = "read"
     dnf = "dnf"  # did not finish
@@ -54,9 +54,14 @@ class Book(Base):
     cover_url = Column(String(500), nullable=True)
     genre = Column(String(200), nullable=True)  # legacy free-text field, superseded by tags
     location = Column(String(200), nullable=True, index=True)
+    series = Column(String(200), nullable=True, index=True)
 
     owned = Column(Boolean, default=True)
-    status = Column(Enum(ReadStatus), default=ReadStatus.unread)
+    # plain String rather than SQLAlchemy Enum: an Enum column bakes in a CHECK
+    # constraint listing the allowed values at table-creation time, which
+    # blocks adding new statuses later without a table rebuild. Validation of
+    # allowed values happens at the Pydantic layer instead.
+    status = Column(String(20), default=ReadStatus.unread.value, index=True)
     date_started = Column(Date, nullable=True)
     date_finished = Column(Date, nullable=True)
     rating = Column(Integer, nullable=True)  # 1-5, nullable

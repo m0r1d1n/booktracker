@@ -19,8 +19,9 @@
     </div>
   </div>
   <nav class="tabs" id="tabs">
-    <button class="tab active" data-view="shelf">Shelf</button>
-    <button class="tab" data-view="library">Library</button>
+    <button class="tab active" data-view="shelf">Library</button>
+    <button class="tab" data-view="toread">To Read</button>
+    <button class="tab" data-view="library">Edit</button>
     <button class="tab" data-view="reviews">Reviews</button>
     <button class="tab" data-view="import">Accession</button>
   </nav>
@@ -40,6 +41,7 @@
       <select id="shelf-filter">
         <option value="">All statuses</option>
         <option value="unread">Unread</option>
+        <option value="planning">Planning to read</option>
         <option value="reading">Reading</option>
         <option value="read">Read</option>
         <option value="dnf">Did not finish</option>
@@ -50,7 +52,16 @@
       <select id="shelf-tag-filter">
         <option value="">All genres/tags</option>
       </select>
+      <div class="view-mode-toggle" id="shelf-group-toggle">
+        <button class="mode-btn active" data-group="location" type="button">By Location</button>
+        <button class="mode-btn" data-group="series" type="button">By Series</button>
+        <button class="mode-btn" data-group="none" type="button">Flat</button>
+      </div>
       <button class="btn-secondary" id="shelf-shuffle-btn" type="button">Sort A–Z</button>
+      <div class="view-mode-toggle" id="shelf-mode-toggle">
+        <button class="mode-btn active" data-mode="spine" type="button">Spines</button>
+        <button class="mode-btn" data-mode="full" type="button">Full Covers</button>
+      </div>
     </div>
     <div id="shelf-container" class="shelf-container">
       <p class="empty-note">Loading the shelf…</p>
@@ -64,6 +75,7 @@
       <select id="library-filter">
         <option value="">All statuses</option>
         <option value="unread">Unread</option>
+        <option value="planning">Planning to read</option>
         <option value="reading">Reading</option>
         <option value="read">Read</option>
         <option value="dnf">Did not finish</option>
@@ -74,6 +86,10 @@
       <select id="library-tag-filter">
         <option value="">All genres/tags</option>
       </select>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--parchment-dim);">
+        <input type="checkbox" id="library-missing-cover" style="width:auto;" />
+        Missing cover only
+      </label>
       <button class="btn-primary" id="add-book-btn">+ Add book</button>
     </div>
     <div id="bulk-bar" class="bulk-bar hidden">
@@ -109,6 +125,26 @@
     </div>
   </section>
 
+  <!-- TO READ VIEW -->
+  <section id="view-toread" class="view">
+    <div class="view-controls">
+      <input type="search" id="toread-search" placeholder="Search title or author…" />
+    </div>
+    <p class="hint" style="margin: -8px 0 16px;">Everything marked Reading or Planning to Read, across every location.</p>
+    <table class="library-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Author</th>
+          <th>Status</th>
+          <th>Tags</th>
+          <th>Location</th>
+        </tr>
+      </thead>
+      <tbody id="toread-body"></tbody>
+    </table>
+  </section>
+
   <!-- IMPORT VIEW -->
   <section id="view-import" class="view">
     <div class="import-panel">
@@ -131,7 +167,8 @@
       </div>
 
       <div id="itab-csv" class="itab-pane" style="display:none;">
-        <p class="hint">Upload a CSV/TSV export from your previous tracker (Title, Author, ISBN, Publisher, Date Read, Shelves, tags, owned, dropped_dates, currently_reading, etc. — columns are matched by name, extras are ignored). Rows whose ISBN already matches a book in your library will <strong>update</strong> that book's status, dates, rating, and tags instead of duplicating it.</p>
+        <p class="hint">Upload a CSV/TSV export from your previous tracker (Title, Author, ISBN, Publisher, Date Read, Shelves, tags, owned, dropped_dates, currently_reading, etc. — columns are matched by name, extras are ignored). Rows whose ISBN already matches a book in your library will <strong>update</strong> that book's status, dates, rating, and tags instead of duplicating it. If you re-upload a copy of this app's own <strong>Export library to CSV</strong> file (e.g. after editing statuses or dates in a spreadsheet), it's auto-detected and matched by ID instead — safer and more precise than the ISBN/title guessing used for third-party files.</p>
+        <p class="hint" style="color:#d98a78;">⚠ If you edit the exported CSV in Excel or Google Sheets, format the <strong>ISBN column as Text before saving</strong> — otherwise the spreadsheet will silently convert 13-digit ISBNs into scientific notation (e.g. <code>9.78045E+12</code>), which loses the original digits permanently. This app detects and ignores mangled ISBNs on import rather than saving the corrupted value, but the fix is easiest done in the spreadsheet itself.</p>
         <input type="file" id="csv-file-input" accept=".csv,.tsv,text/csv,text/tab-separated-values" />
         <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13px; color:var(--parchment-dim);">
           <input type="checkbox" id="csv-enrich-checkbox" style="width:auto;" />
@@ -142,6 +179,16 @@
           <span id="csv-import-progress" class="import-progress"></span>
         </div>
         <div id="csv-import-results" class="import-results"></div>
+
+        <hr style="border-color: rgba(193,150,63,0.25); margin: 26px 0;" />
+        <h3 style="font-size:16px; margin-bottom:6px;">Restore a full ZIP backup</h3>
+        <p class="hint">If you have a <code>.zip</code> from this app's own "Export as ZIP" (below), upload it here to restore everything — including manually-uploaded cover images. Matches books by ID first, then ISBN, then an unambiguous title match.</p>
+        <input type="file" id="zip-file-input" accept=".zip,application/zip" />
+        <div class="import-actions">
+          <button class="btn-primary" id="zip-import-btn">Restore ZIP backup</button>
+          <span id="zip-import-progress" class="import-progress"></span>
+        </div>
+        <div id="zip-import-results" class="import-results"></div>
       </div>
 
       <div id="itab-locations" class="itab-pane" style="display:none;">
@@ -155,9 +202,16 @@
       </div>
 
       <div id="itab-export" class="itab-pane" style="display:none;">
-        <p class="hint">Download every book in your library — including location, tags, dates, rating and review — as a single CSV file. Handy as a backup, or to move your catalogue somewhere else.</p>
+        <p class="hint">Download every book in your library — including location, tags, dates, rating and review — as a single CSV file. Handy as a backup, or to move your catalogue somewhere else. Cover images that were manually uploaded aren't included in the plain CSV (only their filename is referenced) — use the ZIP export below if you want those too.</p>
         <div class="import-actions">
           <button class="btn-primary" id="export-csv-btn">Export library to CSV</button>
+        </div>
+
+        <hr style="border-color: rgba(193,150,63,0.25); margin: 26px 0;" />
+        <h3 style="font-size:16px; margin-bottom:6px;">Full backup (includes cover images)</h3>
+        <p class="hint">Same data as above, bundled as a <code>.zip</code> together with the actual image files for any covers you've manually uploaded. Restore it from the "Restore a full ZIP backup" section on the CSV import tab.</p>
+        <div class="import-actions">
+          <button class="btn-primary" id="export-zip-btn">Export as ZIP (includes covers)</button>
         </div>
       </div>
     </div>
@@ -167,6 +221,7 @@
 
 <datalist id="location-list"></datalist>
 <datalist id="tag-list"></datalist>
+<datalist id="series-list"></datalist>
 
 <!-- BOOK DETAIL / EDIT MODAL -->
 <div id="book-modal" class="modal-overlay hidden">
