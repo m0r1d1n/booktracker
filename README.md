@@ -12,6 +12,25 @@ ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
   falling back to Google Books — both free, no API key required
 - **Data:** stored in a named Docker volume (`booktracker_data`), so it survives rebuilds
 
+
+<img width="1115" height="762" alt="Booktracker_01" src="https://github.com/user-attachments/assets/c9b7945d-a680-409b-809f-81a8467c9172" />
+
+
+<img width="1116" height="856" alt="Booktracker_02" src="https://github.com/user-attachments/assets/99ff33e2-421f-4e2b-9985-fd72123a43d2" />
+
+
+<img width="1118" height="896" alt="Booktracker_06" src="https://github.com/user-attachments/assets/49808257-1bbd-4259-8646-dc47001f62e1" />
+
+
+<img width="1116" height="866" alt="Booktracker_04" src="https://github.com/user-attachments/assets/d6c366fc-7c53-4110-bcfd-24bffa8dbfda" />
+
+
+
+<img width="794" height="602" alt="Booktracker_05" src="https://github.com/user-attachments/assets/7b0e1964-4bc1-46f8-8408-560d01a69b6c" />
+
+
+
+
 ## Run it
 
 ```bash
