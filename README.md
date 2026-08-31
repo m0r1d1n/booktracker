@@ -250,3 +250,22 @@ booktracker/
   `status` column is a plain `String`, not a SQLAlchemy `Enum`, specifically so
   adding another status value in `ReadStatus` (`models.py`) never needs another
   table rebuild — just add the member and update the frontend's option lists.
+
+### 👥 Contributors
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com">
+        <img src="https://github.com.png" width="60px;" alt="m0r1d1n"/><br />
+        <sub><b>m0r1d1n</b></sub>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/anthropics">
+        <img src="https://github.com" width="60px;" alt="Claude AI"/><br />
+        <sub><b>Claude AI</b></sub>
+      </a>
+    </td>
+  </tr>
+</table>
