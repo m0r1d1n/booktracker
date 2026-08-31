@@ -1,5 +1,7 @@
 # The Stacks — a self-hosted personal library tracker
 
+Authors Note: Vibe Coded trash, but it does the job for keeping track of my personal library. 
+
 A small Docker app for cataloguing ~1000 books: ownership, reading status/dates,
 ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
 
@@ -9,6 +11,28 @@ ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
 - **Metadata source:** [Open Library](https://openlibrary.org/dev/docs/api/books) API,
   falling back to Google Books — both free, no API key required
 - **Data:** stored in a named Docker volume (`booktracker_data`), so it survives rebuilds
+
+## How's it Look?
+This is the home page of the app.
+<br> 
+
+<img height="500" alt="Booktracker_01" src="https://github.com/user-attachments/assets/ef375624-a2e4-40c7-a0c9-d7f4bbba6d18" />
+
+<br> 
+<br>
+<br> 
+
+<details>
+  <summary><b>📸 Click to view Project Gallery</b></summary>
+  <br>
+  <br>
+  
+  | Home Page - Spine View | Home Page - Cover View | Editing | Sorted by Locations | Mass Edit Page | Import/Export | 
+  | :---: | :---: | :---: | :---: | :---: | :---: |
+  | ![Home Page - Spine View](https://github.com/user-attachments/assets/ef375624-a2e4-40c7-a0c9-d7f4bbba6d18) | ![Home Page - Cover View](https://github.com/user-attachments/assets/b5f6476d-64e8-4cc3-b816-3192e7deda86) | ![Editing](https://github.com/user-attachments/assets/d9f8fca2-9de1-410d-bd79-7b0ad26e37e5) | ![Sorted by Locations](https://github.com/user-attachments/assets/e6a620ee-2b59-4179-a943-70c84a06ec8d) | ![Mass Edit Page](https://github.com/user-attachments/assets/ad7c9d62-6dba-45e1-8b55-e7e6353eaf24) | ![Import / Export](https://github.com/user-attachments/assets/d3df005b-79d3-48a0-88b2-1762910f324c) | 
+
+</details>
+
 
 ## Run it
 
@@ -226,3 +250,22 @@ booktracker/
   `status` column is a plain `String`, not a SQLAlchemy `Enum`, specifically so
   adding another status value in `ReadStatus` (`models.py`) never needs another
   table rebuild — just add the member and update the frontend's option lists.
+
+### 👥 Contributors
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com">
+        <img src="https://github.com.png" width="60px;" alt="m0r1d1n"/><br />
+        <sub><b>m0r1d1n</b></sub>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/anthropics">
+        <img src="https://github.com" width="60px;" alt="Claude AI"/><br />
+        <sub><b>Claude AI</b></sub>
+      </a>
+    </td>
+  </tr>
+</table>
