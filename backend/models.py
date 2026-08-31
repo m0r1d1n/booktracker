@@ -9,6 +9,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Text,
+    Float,
     ForeignKey,
     Table,
 )
@@ -62,23 +63,36 @@ class Book(Base):
     # blocks adding new statuses later without a table rebuild. Validation of
     # allowed values happens at the Pydantic layer instead.
     status = Column(String(20), default=ReadStatus.unread.value, index=True)
+
+    # Cached "most recent read" summary — kept in sync from read_entries
+    # (see _recompute_read_cache in main.py) whenever a read entry is added,
+    # edited, or removed. Exists so the shelf/library table/CSV export can
+    # keep showing "last read" info without a join, even though the full,
+    # possibly-multiple-reads history lives in read_entries below.
     date_started = Column(Date, nullable=True)
     date_finished = Column(Date, nullable=True)
-    rating = Column(Integer, nullable=True)  # 1-5, nullable
+    rating = Column(Float, nullable=True)  # 1-5 in 0.5 increments, nullable
 
     added_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    review = relationship(
-        "Review", back_populates="book", uselist=False, cascade="all, delete-orphan"
+    read_entries = relationship(
+        "ReadEntry", back_populates="book", cascade="all, delete-orphan",
+        order_by="ReadEntry.id",
     )
     tags = relationship("Tag", secondary=book_tags, backref="books")
 
 
-class Review(Base):
-    __tablename__ = "reviews"
+class ReadEntry(Base):
+    """One read-through of a book: its own date range, rating, and review —
+    so re-reading a book keeps its earlier reads (and their reviews/ratings)
+    intact instead of overwriting them."""
+    __tablename__ = "read_entries"
 
     id = Column(Integer, primary_key=True, index=True)
-    book_id = Column(Integer, ForeignKey("books.id"), unique=True, nullable=False)
+    book_id = Column(Integer, ForeignKey("books.id"), nullable=False, index=True)
+    date_started = Column(Date, nullable=True)
+    date_finished = Column(Date, nullable=True)
+    rating = Column(Float, nullable=True)  # 1-5 in 0.5 increments, nullable
     review_text = Column(Text, nullable=False, default="")
     contains_spoilers = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -86,4 +100,4 @@ class Review(Base):
         DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
     )
 
-    book = relationship("Book", back_populates="review")
+    book = relationship("Book", back_populates="read_entries")

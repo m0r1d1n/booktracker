@@ -1,13 +1,15 @@
 const API = "/api";
 let currentBooks = [];
 let currentModalBookId = null;
+let currentModalBook = null;
+let currentEntries = [];
 let knownLocations = [];
 let knownTags = [];
 let knownSeries = [];
 let selectedBookIds = new Set();
 let shelfShuffled = true; // shelf opens in random order by default
 let shelfCoverMode = localStorage.getItem("shelfCoverMode") === "full" ? "full" : "spine";
-let shelfGroupMode = ["location", "series", "none"].includes(localStorage.getItem("shelfGroupMode"))
+let shelfGroupMode = ["location", "series", "author", "none"].includes(localStorage.getItem("shelfGroupMode"))
   ? localStorage.getItem("shelfGroupMode")
   : "location";
 
@@ -34,9 +36,45 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+let _starWidgetCounter = 0;
 function stars(rating) {
   if (!rating) return '<span class="stars">—</span>';
-  return `<span class="stars">${"★".repeat(rating)}${"☆".repeat(5 - rating)}</span>`;
+  return starWidgetHtml(`stars-inline-${_starWidgetCounter++}`, rating, false);
+}
+
+// ---------- half-star rating widget (shared by entry cards, Reviews, and
+// the read-entry add/edit form) ----------
+function starWidgetHtml(id, value, editable) {
+  const v = value || 0;
+  let html = `<div class="star-widget${editable ? " editable" : ""}" id="${id}" data-value="${v}">`;
+  for (let i = 1; i <= 5; i++) {
+    const fillPct = v >= i ? 100 : v >= i - 0.5 ? 50 : 0;
+    html += `<span class="star-pos" data-pos="${i}">
+      <span class="star-bg">★</span>
+      <span class="star-fg" style="width:${fillPct}%">★</span>
+      ${editable ? `<span class="star-click star-click-left" data-value="${i - 0.5}"></span><span class="star-click star-click-right" data-value="${i}"></span>` : ""}
+    </span>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function wireStarWidget(id) {
+  const container = document.getElementById(id);
+  if (!container) return;
+  container.querySelectorAll(".star-click").forEach((el) => {
+    el.addEventListener("click", () => {
+      const newVal = Number(el.dataset.value);
+      const current = Number(container.dataset.value);
+      const finalVal = current === newVal ? 0 : newVal;
+      container.dataset.value = finalVal;
+      container.querySelectorAll(".star-pos").forEach((pos) => {
+        const i = Number(pos.dataset.pos);
+        const fillPct = finalVal >= i ? 100 : finalVal >= i - 0.5 ? 50 : 0;
+        pos.querySelector(".star-fg").style.width = fillPct + "%";
+      });
+    });
+  });
 }
 
 function escapeHtml(str) {
@@ -214,12 +252,21 @@ async function loadShelf() {
     return;
   }
 
-  // group by location or series, alphabetically, with the "none" bucket
-  // last; order within each group follows the current shuffle/sort toggle
-  const getKey = shelfGroupMode === "series"
-    ? (b) => b.series || "__none__"
-    : (b) => b.location || "__none__";
-  const noneLabel = shelfGroupMode === "series" ? "No series" : "Unsorted";
+  // group by location, series, or author, alphabetically, with the "none"
+  // bucket last; order within each group follows the current shuffle/sort
+  // toggle above
+  const GROUP_KEY_FNS = {
+    series: (b) => b.series || "__none__",
+    author: (b) => b.authors || "__none__",
+    location: (b) => b.location || "__none__",
+  };
+  const NONE_LABELS = {
+    series: "No series",
+    author: "Unknown author",
+    location: "Unsorted",
+  };
+  const getKey = GROUP_KEY_FNS[shelfGroupMode] || GROUP_KEY_FNS.location;
+  const noneLabel = NONE_LABELS[shelfGroupMode] || NONE_LABELS.location;
 
   const groups = {};
   books.forEach((b) => {
@@ -383,20 +430,20 @@ document.getElementById("add-book-btn").addEventListener("click", () => openBook
 async function loadReviews() {
   const container = document.getElementById("reviews-container");
   container.innerHTML = '<p class="empty-note">Loading reviews…</p>';
-  const reviews = await api("/reviews");
-  if (reviews.length === 0) {
-    container.innerHTML = '<p class="empty-note">No reviews written yet. Open any book and add one.</p>';
+  const entries = await api("/reviews");
+  if (entries.length === 0) {
+    container.innerHTML = '<p class="empty-note">No reviews written yet. Open any book and add one from its Reading History tab.</p>';
     return;
   }
-  container.innerHTML = reviews.map((r) => `
-    <div class="review-card" data-id="${r.book.id}">
-      <h3>${escapeHtml(r.book.title)} ${stars(r.book.rating)}</h3>
-      <div class="review-meta">${escapeHtml(r.book.authors || "")} · updated ${new Date(r.updated_at).toLocaleDateString()} ${r.contains_spoilers ? '<span class="spoiler-tag">· contains spoilers</span>' : ""}</div>
-      <div class="review-text">${escapeHtml(r.review_text)}</div>
+  container.innerHTML = entries.map((e) => `
+    <div class="review-card" data-id="${e.book.id}">
+      <h3>${escapeHtml(e.book.title)} ${starWidgetHtml("review-stars-" + e.id, e.rating, false)}</h3>
+      <div class="review-meta">${escapeHtml(e.book.authors || "")} · ${formatEntryDateRange(e)} · updated ${new Date(e.updated_at).toLocaleDateString()} ${e.contains_spoilers ? '<span class="spoiler-tag">· contains spoilers</span>' : ""}</div>
+      <div class="review-text">${escapeHtml(e.review_text)}</div>
     </div>
   `).join("");
   container.querySelectorAll(".review-card").forEach((el) =>
-    el.addEventListener("click", () => openBookModal(Number(el.dataset.id), "review"))
+    el.addEventListener("click", () => openBookModal(Number(el.dataset.id), "history"))
   );
 }
 
@@ -513,6 +560,9 @@ document.getElementById("csv-import-btn").addEventListener("click", async () => 
     if (result.isbn_corrupted_count) {
       lines.unshift(`<div class="result-line notfound">⚠ ${result.isbn_corrupted_count} row(s) had an ISBN mangled into scientific notation (likely from opening the CSV in Excel/Sheets) — those ISBNs were left untouched rather than overwritten with corrupted data. Matching still worked via the ID column.</div>`);
     }
+    if (result.status_corrected_count) {
+      lines.unshift(`<div class="result-line notfound">⚠ ${result.status_corrected_count} row(s) had a finish date but were marked Unread — corrected to Read automatically, since a finished book can't be Unread.</div>`);
+    }
     resultsEl.innerHTML = lines.join("") || '<div class="result-line dup">No rows processed.</div>';
     fileInput.value = "";
     loadStats();
@@ -608,6 +658,9 @@ document.getElementById("zip-import-btn").addEventListener("click", async () => 
     if (result.isbn_corrupted_count) {
       lines.unshift(`<div class="result-line notfound">⚠ ${result.isbn_corrupted_count} row(s) had an ISBN mangled into scientific notation (likely from opening the CSV in Excel/Sheets) — those ISBNs were left untouched rather than overwritten with corrupted data. Matching still worked via the ID column.</div>`);
     }
+    if (result.status_corrected_count) {
+      lines.unshift(`<div class="result-line notfound">⚠ ${result.status_corrected_count} row(s) had a finish date but were marked Unread — corrected to Read automatically, since a finished book can't be Unread.</div>`);
+    }
     resultsEl.innerHTML = lines.join("") || '<div class="result-line dup">No rows processed.</div>';
     fileInput.value = "";
     loadStats();
@@ -657,8 +710,10 @@ async function openBookModal(bookId, initialTab = "details") {
   }
 
   const book = await api(`/books/${bookId}`);
-  const review = await api(`/books/${bookId}/review`);
-  renderBookModal(book, review, initialTab);
+  const entries = await api(`/books/${bookId}/read-entries`);
+  currentModalBook = book;
+  currentEntries = entries;
+  renderBookModal(book, entries, initialTab);
 }
 
 function renderAddBookForm() {
@@ -742,7 +797,140 @@ function renderAddBookForm() {
   });
 }
 
-function renderBookModal(book, review, initialTab) {
+function formatEntryDateRange(e) {
+  if (e.date_started && e.date_finished) return `${e.date_started} → ${e.date_finished}`;
+  if (e.date_started && !e.date_finished) return `Started ${e.date_started} · in progress`;
+  if (!e.date_started && e.date_finished) return `Finished ${e.date_finished}`;
+  return "No dates recorded";
+}
+
+function renderEntryCard(e) {
+  return `
+    <div class="entry-card" data-id="${e.id}">
+      <div class="entry-header">
+        <span class="entry-dates">${formatEntryDateRange(e)}</span>
+        ${starWidgetHtml("entry-stars-" + e.id, e.rating, false)}
+      </div>
+      ${e.review_text ? `<div class="entry-review">${e.contains_spoilers ? '<span class="spoiler-tag">SPOILERS </span>' : ""}${escapeHtml(e.review_text)}</div>` : ""}
+      <div class="entry-actions">
+        <button class="btn-secondary entry-edit-btn" data-id="${e.id}" type="button">Edit</button>
+        <button class="btn-danger entry-delete-btn" data-id="${e.id}" type="button">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderEntryForm(entry) {
+  const isEdit = !!entry;
+  return `
+    <div class="entry-form" id="entry-form">
+      <div class="form-grid">
+        <label class="full">Started
+          <input type="date" id="ef-started" value="${entry?.date_started || ""}" />
+        </label>
+        <label class="full">Finished
+          <input type="date" id="ef-finished" value="${entry?.date_finished || ""}" />
+        </label>
+        <label class="full">Rating
+          ${starWidgetHtml("ef-rating", entry?.rating || 0, true)}
+        </label>
+        <label class="full">Review
+          <textarea class="review-textarea" id="ef-review-text" placeholder="What did you think?">${escapeHtml(entry?.review_text || "")}</textarea>
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:8px;">
+          <input type="checkbox" id="ef-spoilers" ${entry?.contains_spoilers ? "checked" : ""} style="width:auto;" />
+          Contains spoilers
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="ef-cancel-btn" type="button">Cancel</button>
+        <button class="btn-primary" id="ef-save-btn" type="button">${isEdit ? "Save read" : "Add read"}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderHistoryList() {
+  const list = document.getElementById("read-entries-list");
+  if (!list) return;
+  if (currentEntries.length === 0) {
+    list.innerHTML = '<p class="empty-note">No reads logged yet.</p>';
+  } else {
+    const sorted = [...currentEntries].sort((a, b) => {
+      const ad = a.date_finished || a.date_started || "";
+      const bd = b.date_finished || b.date_started || "";
+      return bd.localeCompare(ad);
+    });
+    list.innerHTML = sorted.map(renderEntryCard).join("");
+  }
+  list.querySelectorAll(".entry-edit-btn").forEach((btn) =>
+    btn.addEventListener("click", () => openEntryForm(Number(btn.dataset.id)))
+  );
+  list.querySelectorAll(".entry-delete-btn").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this read entry?")) return;
+      await api(`/read-entries/${btn.dataset.id}`, { method: "DELETE" });
+      await refreshModalEntries();
+    })
+  );
+}
+
+function openEntryForm(entryId) {
+  const entry = entryId ? currentEntries.find((e) => e.id === entryId) : null;
+  const container = document.getElementById("entry-form-container");
+  container.innerHTML = renderEntryForm(entry);
+  document.getElementById("add-entry-btn").style.display = "none";
+  wireStarWidget("ef-rating");
+
+  document.getElementById("ef-cancel-btn").addEventListener("click", () => {
+    container.innerHTML = "";
+    document.getElementById("add-entry-btn").style.display = "";
+  });
+
+  document.getElementById("ef-save-btn").addEventListener("click", async () => {
+    const payload = {
+      date_started: document.getElementById("ef-started").value || null,
+      date_finished: document.getElementById("ef-finished").value || null,
+      rating: Number(document.getElementById("ef-rating").dataset.value) || null,
+      review_text: document.getElementById("ef-review-text").value,
+      contains_spoilers: document.getElementById("ef-spoilers").checked,
+    };
+    try {
+      if (entry) {
+        await api(`/read-entries/${entry.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      } else {
+        await api(`/books/${currentModalBook.id}/read-entries`, { method: "POST", body: JSON.stringify(payload) });
+      }
+      container.innerHTML = "";
+      document.getElementById("add-entry-btn").style.display = "";
+      await refreshModalEntries();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+}
+
+async function refreshModalEntries() {
+  const book = await api(`/books/${currentModalBook.id}`);
+  const entries = await api(`/books/${currentModalBook.id}/read-entries`);
+  currentModalBook = book;
+  currentEntries = entries;
+  renderBookModal(book, entries, "history");
+}
+
+function readSummaryLine(book) {
+  if (book.date_finished) {
+    const started = book.date_started ? ` (started ${book.date_started})` : "";
+    const rating = book.rating ? ` — ${stars(book.rating)}` : "";
+    return `Last read: finished ${book.date_finished}${started}${rating}`;
+  }
+  if (book.date_started) return `Currently reading — started ${book.date_started}`;
+  return "Not read yet";
+}
+
+function renderBookModal(book, entries, initialTab) {
+  currentModalBook = book;
+  currentEntries = entries;
   modalBody.innerHTML = `
     <div class="mb-header">
       <img class="mb-cover" src="${book.cover_url || ""}" onerror="this.style.visibility='hidden'" />
@@ -760,7 +948,7 @@ function renderBookModal(book, review, initialTab) {
 
     <div class="tab-strip">
       <button class="mtab active" data-mtab="details">Details</button>
-      <button class="mtab" data-mtab="review">Review</button>
+      <button class="mtab" data-mtab="history">Reading History${entries.length ? ` (${entries.length})` : ""}</button>
     </div>
 
     <div id="mtab-details" class="mtab-pane">
@@ -790,7 +978,7 @@ function renderBookModal(book, review, initialTab) {
         </label>
         <label>Status
           <select id="e-status">
-            ${["unread", "planning", "reading", "read", "dnf"].map((s) => `<option value="${s}" ${book.status === s ? "selected" : ""}>${STATUS_LABELS[s]}</option>`).join("")}
+            ${["unread", "planning", "reading", "read", "dnf"].map((s) => `<option value="${s}" ${book.status === s ? "selected" : ""} ${s === "unread" && book.date_finished ? "disabled" : ""}>${STATUS_LABELS[s]}</option>`).join("")}
           </select>
         </label>
         <label>Owned
@@ -799,33 +987,20 @@ function renderBookModal(book, review, initialTab) {
             <option value="false" ${!book.owned ? "selected" : ""}>No</option>
           </select>
         </label>
-        <label>Started
-          <input type="date" id="e-started" value="${book.date_started || ""}" />
-        </label>
-        <label>Finished
-          <input type="date" id="e-finished" value="${book.date_finished || ""}" />
-        </label>
-        <label class="full">Rating
-          <div class="rating-input" id="e-rating" data-value="${book.rating || 0}">
-            ${[1,2,3,4,5].map((n) => `<span data-star="${n}" class="${book.rating >= n ? "active" : ""}">★</span>`).join("")}
-          </div>
-        </label>
       </div>
+      <p class="read-summary">${readSummaryLine(book)} <span class="read-summary-hint">— manage full reading history in the tab above</span></p>
       <div class="modal-actions">
         <button class="btn-danger" id="delete-book-btn">Remove book</button>
         <button class="btn-primary" id="save-book-btn">Save changes</button>
       </div>
     </div>
 
-    <div id="mtab-review" class="mtab-pane" style="display:none;">
-      <textarea class="review-textarea" id="e-review-text" placeholder="What did you think?">${escapeHtml(review?.review_text || "")}</textarea>
-      <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:var(--parchment-dim);">
-        <input type="checkbox" id="e-review-spoilers" ${review?.contains_spoilers ? "checked" : ""} style="width:auto;" />
-        Contains spoilers
-      </label>
+    <div id="mtab-history" class="mtab-pane" style="display:none;">
+      <div id="read-entries-list"></div>
+      <div id="entry-form-container"></div>
       <div class="modal-actions">
         <span></span>
-        <button class="btn-primary" id="save-review-btn">Save review</button>
+        <button class="btn-primary" id="add-entry-btn" type="button">+ Add a read</button>
       </div>
     </div>
   `;
@@ -839,7 +1014,10 @@ function renderBookModal(book, review, initialTab) {
       document.getElementById("mtab-" + t.dataset.mtab).style.display = "block";
     })
   );
-  if (initialTab === "review") modalBody.querySelector('[data-mtab="review"]').click();
+  if (initialTab === "history") modalBody.querySelector('[data-mtab="history"]').click();
+
+  renderHistoryList();
+  document.getElementById("add-entry-btn").addEventListener("click", () => openEntryForm(null));
 
   // cover upload / removal
   document.getElementById("e-cover-upload-btn").addEventListener("click", async () => {
@@ -859,7 +1037,7 @@ function renderBookModal(book, review, initialTab) {
       const updated = await res.json();
       status.textContent = "Cover updated.";
       book.cover_url = updated.cover_url;
-      renderBookModal(book, review, "details");
+      renderBookModal(book, currentEntries, "details");
     } catch (err) {
       status.textContent = "Upload failed: " + err.message;
     }
@@ -871,20 +1049,9 @@ function renderBookModal(book, review, initialTab) {
       if (!confirm("Remove this book's cover image?")) return;
       const updated = await api(`/books/${book.id}/cover`, { method: "DELETE" });
       book.cover_url = updated.cover_url;
-      renderBookModal(book, review, "details");
+      renderBookModal(book, currentEntries, "details");
     });
   }
-
-  // star rating
-  const ratingEl = document.getElementById("e-rating");
-  ratingEl.querySelectorAll("span").forEach((s) =>
-    s.addEventListener("click", () => {
-      const v = Number(s.dataset.star);
-      ratingEl.dataset.value = ratingEl.dataset.value === String(v) ? "0" : String(v);
-      const active = Number(ratingEl.dataset.value);
-      ratingEl.querySelectorAll("span").forEach((x) => x.classList.toggle("active", Number(x.dataset.star) <= active));
-    })
-  );
 
   document.getElementById("save-book-btn").addEventListener("click", async () => {
     const title = document.getElementById("e-title").value.trim();
@@ -894,29 +1061,21 @@ function renderBookModal(book, review, initialTab) {
       authors: document.getElementById("e-authors").value.trim() || null,
       status: document.getElementById("e-status").value,
       owned: document.getElementById("e-owned").value === "true",
-      date_started: document.getElementById("e-started").value || null,
-      date_finished: document.getElementById("e-finished").value || null,
-      rating: Number(ratingEl.dataset.value) || null,
       location: document.getElementById("e-location").value.trim() || null,
       series: document.getElementById("e-series").value.trim() || null,
       tags: document.getElementById("e-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
     };
-    await api(`/books/${book.id}`, { method: "PUT", body: JSON.stringify(payload) });
-    closeModal();
+    try {
+      await api(`/books/${book.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      closeModal();
+    } catch (err) {
+      alert(err.message);
+    }
   });
 
   document.getElementById("delete-book-btn").addEventListener("click", async () => {
     if (!confirm(`Remove "${book.title}" from your library?`)) return;
     await api(`/books/${book.id}`, { method: "DELETE" });
-    closeModal();
-  });
-
-  document.getElementById("save-review-btn").addEventListener("click", async () => {
-    const payload = {
-      review_text: document.getElementById("e-review-text").value,
-      contains_spoilers: document.getElementById("e-review-spoilers").checked,
-    };
-    await api(`/books/${book.id}/review`, { method: "PUT", body: JSON.stringify(payload) });
     closeModal();
   });
 }

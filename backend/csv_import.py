@@ -156,12 +156,24 @@ def map_backup_row(row: dict) -> dict:
     if dfi:
         out["date_finished"] = dfi
 
-    if lower_map.get("rating", "").isdigit():
-        out["rating"] = int(lower_map["rating"])
+    rating_raw = lower_map.get("rating", "").strip()
+    if rating_raw:
+        try:
+            out["rating"] = float(rating_raw)
+        except ValueError:
+            pass
 
     tags_field = lower_map.get("tags", "")
     if tags_field:
         out["tags"] = [t.strip() for t in tags_field.split(";") if t.strip()]
+
+    # A book with a finish date can't logically be Unread — if a spreadsheet
+    # edit left them inconsistent, correct it to Read rather than reject the
+    # whole row (this matches _validate_status_date_consistency in main.py,
+    # which enforces the same rule for interactive edits via the API).
+    if out.get("date_finished") and out.get("status") == ReadStatus.unread:
+        out["status"] = ReadStatus.read
+        out["_status_corrected"] = True
 
     out["_review_text"] = lower_map.get("review", "")
     out["_contains_spoilers"] = lower_map.get("contains spoilers", "").lower() in TRUE_VALUES

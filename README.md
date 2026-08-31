@@ -1,7 +1,5 @@
 # The Stacks — a self-hosted personal library tracker
 
-Note: Vibecoded for fun. Use at own risk. 
-
 A small Docker app for cataloguing ~1000 books: ownership, reading status/dates,
 ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
 
@@ -11,25 +9,6 @@ ratings, reviews, bulk ISBN import, and a visual "shelf" view with cover art.
 - **Metadata source:** [Open Library](https://openlibrary.org/dev/docs/api/books) API,
   falling back to Google Books — both free, no API key required
 - **Data:** stored in a named Docker volume (`booktracker_data`), so it survives rebuilds
-
-
-<img width="1115" height="762" alt="Booktracker_01" src="https://github.com/user-attachments/assets/c9b7945d-a680-409b-809f-81a8467c9172" />
-
-
-<img width="1116" height="856" alt="Booktracker_02" src="https://github.com/user-attachments/assets/99ff33e2-421f-4e2b-9985-fd72123a43d2" />
-
-
-<img width="1118" height="896" alt="Booktracker_06" src="https://github.com/user-attachments/assets/49808257-1bbd-4259-8646-dc47001f62e1" />
-
-
-<img width="1116" height="866" alt="Booktracker_04" src="https://github.com/user-attachments/assets/d6c366fc-7c53-4110-bcfd-24bffa8dbfda" />
-
-
-
-<img width="794" height="602" alt="Booktracker_05" src="https://github.com/user-attachments/assets/7b0e1964-4bc1-46f8-8408-560d01a69b6c" />
-
-
-
 
 ## Run it
 
@@ -45,8 +24,9 @@ To fully reset: `docker compose down -v`.
 ## Using it
 
 - **Library** (the visual bookshelf) — spine art from cover images, grouped by
-  **By Location**, **By Series**, or shown **Flat** with no grouping at all — pick
-  with the segmented control in the toolbar. Filter to one location or one
+  **By Location**, **By Series**, **By Author**, or shown **Flat** with no
+  grouping at all — pick with the segmented control in the toolbar. Filter to
+  one location or one
   genre/tag, or leave both on "All" to see everything. **The order is randomized
   every time you open the tab** (or hit the 🔀 Shuffle button) — a deliberate way
   to rediscover books buried in a big collection; click "Sort A–Z" to switch back
@@ -71,10 +51,29 @@ To fully reset: `docker compose down -v`.
   tick "Missing cover only" to find books that still need a cover. Click a title
   to edit; "+ Add book" to add one manually. Tick the checkboxes on the left and
   use the bar that appears to set — or clear — a location on many books at once.
-- **Reviews** — every book you've written a review for, newest edits first. Reviews
-  are edited from inside a book's modal (Details/Review tabs) and support a
-  spoiler flag.
+- **Reading History & Reviews** — every book can have multiple read-throughs
+  logged, each with its own start/finish dates, half-star rating (0.5
+  increments, e.g. 3.5), review text, and spoiler flag — open a book's modal
+  and use the **Reading History** tab to add a read, edit one, or delete one.
+  This is what re-reading is for: your original read from years ago keeps its
+  own dates, rating, and review exactly as you left them, while a new entry
+  tracks the re-read separately. The book's Details tab shows a simple summary
+  line ("Last read: finished ...") reflecting the most recent (or currently
+  in-progress) read — the Reading History tab is where the real editing
+  happens. The **Reviews** tab lists every read-through that has review text,
+  newest first, across your whole library.
 - **Reading status** — Unread, Planning to Read, Reading, Read, or Did Not Finish.
+  A book with a finish date set can't be Unread — the edit modal disables that
+  option whenever the cached "last read" date is present — but every other
+  status is fine, since re-reading a book you've finished before is a normal
+  reason to move it back to Reading or Planning to Read while its finish date
+  stays as history. This is enforced both in the UI and by the API itself, and
+  CSV/ZIP imports auto-correct any row that violates it (bumping Unread to
+  Read rather than rejecting the row) — you'll see a count of how many rows
+  were corrected in the import results if this happens.
+- **Ratings** — half-star increments from 0.5 to 5 (e.g. 3.5), on both the
+  book level and per read-through. Click the left or right half of a star to
+  set a half or whole value; click the same value again to clear it.
 - **Genres & tags** — every book has a free-text tags field (comma-separated) meant
   for genres, but usable for anything you want to sort by ("owned-signed",
   "to-lend", a series name, whatever). Tag autocompletes from what you've already
@@ -145,11 +144,21 @@ To fully reset: `docker compose down -v`.
       (including Planning to Read), owned, date added, date started, date
       finished, rating, review text, spoiler flag, and manually-uploaded
       cover images.
+    - **Important limitation since Reading History was added:** the CSV/ZIP
+      format is still one row per book, so Date Started/Date Finished/Rating/
+      Review/Contains Spoilers in that row represent only the most recent (or
+      currently in-progress) read-through — **older read-throughs from a
+      book's full reading history are not included in the export and won't
+      survive a wipe-and-restore cycle.** If you rely on the fresh-build
+      workflow and have books with multiple logged reads, be aware that only
+      the latest one persists across a rebuild right now. Exporting/restoring
+      full multi-read history would need a format change (e.g. a separate
+      `read_entries.csv` inside the ZIP) — happy to add that if it matters to
+      your workflow.
     - Restoring always matches by this app's own `ID` column first, so a
       fresh empty database just creates every book anew — expected and fine
       for a wipe-and-restore cycle.
     - Anything not in the CSV/ZIP format isn't preserved across a wipe —
-      currently that's nothing meaningful (every real field is covered), but
       if you add custom fields to `models.py` later, remember to also add
       them to `CSV_EXPORT_HEADER`/`_book_export_row` in `main.py` and to
       `map_backup_row` in `csv_import.py`, or they'll silently reset on your
@@ -166,6 +175,15 @@ To fully reset: `docker compose down -v`.
       (Restoring this app's own ZIP/CSV export instead reads an explicit
       Status column directly, so nothing is guessed on a round-trip.)
     - `tags`/`Bookshelves` columns become the book's tags (genres).
+
+## Known browser quirks
+- **Firefox date inputs (especially on Android)**: date fields need enough
+  width for Firefox to render all three day/month/year segments — if one is
+  squeezed into a narrow column it can become impossible to tap the day
+  segment specifically. The reading-history add/edit form uses full-width date
+  fields for this reason. If you still hit this anywhere, the fix is the
+  same: give that `<input type="date">` its own full-width row rather than
+  sharing a column with another field.
 
 ## Notes on bulk import at ~1000-book scale
 

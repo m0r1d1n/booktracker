@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, text
 
 from database import Base, engine, get_db, SessionLocal, DATA_DIR
-from models import Book, Review, ReadStatus, Tag
+from models import Book, ReadEntry, ReadStatus, Tag
 from isbn_lookup import lookup_isbn, clean_isbn
 from csv_import import parse_rows, map_row, map_backup_row
 
@@ -119,6 +119,39 @@ def _run_migrations():
     finally:
         db.close()
 
+    # one-time migration: fold each book's old single date_started/
+    # date_finished/rating (and, if present, the legacy 1:1 "reviews"
+    # table's text) into one ReadEntry, now that read history is tracked as
+    # a proper list of read-throughs rather than single fields on the book.
+    # Only touches books with zero read_entries, so it's safe to run every
+    # startup without duplicating data once migrated.
+    db = SessionLocal()
+    try:
+        old_reviews_by_book = {}
+        try:
+            rows = db.execute(text("SELECT book_id, review_text, contains_spoilers FROM reviews")).fetchall()
+            for book_id, review_text, contains_spoilers in rows:
+                old_reviews_by_book[book_id] = (review_text or "", bool(contains_spoilers))
+        except Exception:
+            pass  # no legacy `reviews` table — fine on a fresh install
+
+        for b in db.query(Book).all():
+            if b.read_entries:
+                continue
+            review_text, contains_spoilers = old_reviews_by_book.get(b.id, ("", False))
+            if b.date_started or b.date_finished or b.rating or review_text:
+                db.add(ReadEntry(
+                    book_id=b.id,
+                    date_started=b.date_started,
+                    date_finished=b.date_finished,
+                    rating=b.rating,
+                    review_text=review_text,
+                    contains_spoilers=contains_spoilers,
+                ))
+        db.commit()
+    finally:
+        db.close()
+
 
 _run_migrations()
 
@@ -133,6 +166,17 @@ app.add_middleware(
 
 
 # ---------- Schemas ----------
+
+def _validate_rating(v):
+    """Ratings are in half-star increments from 0.5 to 5 (e.g. 3, 3.5, 4)."""
+    if v is None:
+        return v
+    if not (0.5 <= v <= 5):
+        raise ValueError("rating must be between 0.5 and 5")
+    if abs((v * 2) - round(v * 2)) > 1e-6:
+        raise ValueError("rating must be in half-star increments (e.g. 3, 3.5, 4)")
+    return round(v * 2) / 2
+
 
 class BookIn(BaseModel):
     isbn: Optional[str] = None
@@ -150,15 +194,13 @@ class BookIn(BaseModel):
     status: ReadStatus = ReadStatus.unread
     date_started: Optional[datetime.date] = None
     date_finished: Optional[datetime.date] = None
-    rating: Optional[int] = None
+    rating: Optional[float] = None
     tags: Optional[List[str]] = None
 
     @field_validator("rating")
     @classmethod
     def rating_range(cls, v):
-        if v is not None and not (1 <= v <= 5):
-            raise ValueError("rating must be between 1 and 5")
-        return v
+        return _validate_rating(v)
 
 
 class BookUpdate(BaseModel):
@@ -176,20 +218,39 @@ class BookUpdate(BaseModel):
     status: Optional[ReadStatus] = None
     date_started: Optional[datetime.date] = None
     date_finished: Optional[datetime.date] = None
-    rating: Optional[int] = None
+    rating: Optional[float] = None
     tags: Optional[List[str]] = None
 
     @field_validator("rating")
     @classmethod
     def rating_range(cls, v):
-        if v is not None and not (1 <= v <= 5):
-            raise ValueError("rating must be between 1 and 5")
-        return v
+        return _validate_rating(v)
 
 
-class ReviewIn(BaseModel):
-    review_text: str
+class ReadEntryIn(BaseModel):
+    date_started: Optional[datetime.date] = None
+    date_finished: Optional[datetime.date] = None
+    rating: Optional[float] = None
+    review_text: str = ""
     contains_spoilers: bool = False
+
+    @field_validator("rating")
+    @classmethod
+    def rating_range(cls, v):
+        return _validate_rating(v)
+
+
+class ReadEntryUpdate(BaseModel):
+    date_started: Optional[datetime.date] = None
+    date_finished: Optional[datetime.date] = None
+    rating: Optional[float] = None
+    review_text: Optional[str] = None
+    contains_spoilers: Optional[bool] = None
+
+    @field_validator("rating")
+    @classmethod
+    def rating_range(cls, v):
+        return _validate_rating(v)
 
 
 class ImportRequest(BaseModel):
@@ -292,10 +353,25 @@ async def lookup(isbn: str):
     return result
 
 
+def _validate_status_date_consistency(status_value, date_finished_value):
+    """A book with a 'last finished' date can't be marked Unread — but every
+    other status is fine, since someone might be re-reading a book they've
+    finished before (status moves to Reading/Planning while the old finish
+    date is kept as history until the re-read wraps up)."""
+    if date_finished_value and status_value == ReadStatus.unread.value:
+        raise HTTPException(
+            400,
+            "A book with a 'last finished' date can't be marked Unread. "
+            "Choose Reading, Planning to Read, Read, or Did Not Finish instead "
+            "— handy if you're re-reading it.",
+        )
+
+
 @app.post("/api/books")
 def create_book(payload: BookIn, db: Session = Depends(get_db)):
     data = payload.model_dump()
     tag_names = data.pop("tags", None) or []
+    _validate_status_date_consistency(data.get("status"), data.get("date_finished"))
     book = Book(**data)
     db.add(book)
     db.flush()
@@ -320,6 +396,13 @@ def update_book(book_id: int, payload: BookUpdate, db: Session = Depends(get_db)
         raise HTTPException(404, "Book not found")
     data = payload.model_dump(exclude_unset=True)
     tag_names = data.pop("tags", None)
+
+    # validate against the RESULTING state (existing values merged with this
+    # partial update), since either field alone might not have changed
+    resulting_status = data.get("status", book.status)
+    resulting_date_finished = data.get("date_finished", book.date_finished)
+    _validate_status_date_consistency(resulting_status, resulting_date_finished)
+
     if "cover_url" in data and data["cover_url"] != book.cover_url:
         _delete_cover_file(book.cover_url)
     for field, value in data.items():
@@ -393,52 +476,112 @@ def remove_cover(book_id: int, db: Session = Depends(get_db)):
     return book_to_dict(book)
 
 
-# ---------- Review routes ----------
+# ---------- Read entry routes ----------
+# One row per read-through of a book: its own dates, rating, and review, so
+# re-reading a book keeps every earlier read (and its review/rating) intact
+# instead of overwriting it. Book.date_started/date_finished/rating stay in
+# sync as a "most recent read" cache via _recompute_read_cache below, so
+# list views and the plain CSV export can keep showing a summary without a
+# join — but read_entries is the actual source of truth for history.
 
-@app.get("/api/books/{book_id}/review")
-def get_review(book_id: int, db: Session = Depends(get_db)):
-    review = db.query(Review).filter(Review.book_id == book_id).first()
-    if not review:
-        return None
-    return review_to_dict(review)
+def _recompute_read_cache(book: Book):
+    """Sync Book.date_started/date_finished/rating from its read_entries. An
+    in-progress read (has a start date but no finish date yet) counts as
+    "current" and takes priority; otherwise the most recently finished read
+    wins. Also re-applies the "can't be Unread with a finish date" rule,
+    since a newly added/edited read entry can change that outcome."""
+    entries = book.read_entries
+    in_progress = [e for e in entries if e.date_started and not e.date_finished]
+    latest = None
+    if in_progress:
+        latest = sorted(in_progress, key=lambda e: (e.date_started, e.id))[-1]
+    else:
+        finished = [e for e in entries if e.date_finished]
+        if finished:
+            latest = sorted(finished, key=lambda e: (e.date_finished, e.id))[-1]
+
+    if latest:
+        book.date_started = latest.date_started
+        book.date_finished = latest.date_finished
+        book.rating = latest.rating
+    else:
+        book.date_started = None
+        book.date_finished = None
+        book.rating = None
+
+    if book.date_finished and book.status == ReadStatus.unread.value:
+        book.status = ReadStatus.read.value
 
 
-@app.put("/api/books/{book_id}/review")
-def upsert_review(book_id: int, payload: ReviewIn, db: Session = Depends(get_db)):
+@app.get("/api/books/{book_id}/read-entries")
+def list_read_entries(book_id: int, db: Session = Depends(get_db)):
     book = db.query(Book).get(book_id)
     if not book:
         raise HTTPException(404, "Book not found")
-    review = db.query(Review).filter(Review.book_id == book_id).first()
-    if review:
-        review.review_text = payload.review_text
-        review.contains_spoilers = payload.contains_spoilers
-        review.updated_at = datetime.datetime.utcnow()
-    else:
-        review = Review(book_id=book_id, **payload.model_dump())
-        db.add(review)
+    entries = sorted(book.read_entries, key=lambda e: (e.date_started or datetime.date.min, e.id))
+    return [read_entry_to_dict(e) for e in entries]
+
+
+@app.post("/api/books/{book_id}/read-entries")
+def create_read_entry(book_id: int, payload: ReadEntryIn, db: Session = Depends(get_db)):
+    book = db.query(Book).get(book_id)
+    if not book:
+        raise HTTPException(404, "Book not found")
+    entry = ReadEntry(book_id=book_id, **payload.model_dump())
+    db.add(entry)
+    db.flush()
+    db.refresh(book)
+    _recompute_read_cache(book)
     db.commit()
-    db.refresh(review)
-    return review_to_dict(review)
+    db.refresh(entry)
+    return read_entry_to_dict(entry)
+
+
+@app.put("/api/read-entries/{entry_id}")
+def update_read_entry(entry_id: int, payload: ReadEntryUpdate, db: Session = Depends(get_db)):
+    entry = db.query(ReadEntry).get(entry_id)
+    if not entry:
+        raise HTTPException(404, "Read entry not found")
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(entry, key, value)
+    entry.updated_at = datetime.datetime.utcnow()
+    db.flush()
+    book = entry.book
+    _recompute_read_cache(book)
+    db.commit()
+    db.refresh(entry)
+    return read_entry_to_dict(entry)
+
+
+@app.delete("/api/read-entries/{entry_id}")
+def delete_read_entry(entry_id: int, db: Session = Depends(get_db)):
+    entry = db.query(ReadEntry).get(entry_id)
+    if not entry:
+        raise HTTPException(404, "Read entry not found")
+    book = entry.book
+    db.delete(entry)
+    db.flush()
+    db.refresh(book)
+    _recompute_read_cache(book)
+    db.commit()
+    return {"deleted": True}
 
 
 @app.get("/api/reviews")
 def list_reviews(db: Session = Depends(get_db)):
-    reviews = db.query(Review).order_by(Review.updated_at.desc()).all()
+    entries = (
+        db.query(ReadEntry)
+        .filter(ReadEntry.review_text.isnot(None), ReadEntry.review_text != "")
+        .order_by(ReadEntry.updated_at.desc())
+        .all()
+    )
     out = []
-    for r in reviews:
-        d = review_to_dict(r)
-        d["book"] = book_to_dict(r.book)
+    for e in entries:
+        d = read_entry_to_dict(e)
+        d["book"] = book_to_dict(e.book)
         out.append(d)
     return out
-
-
-@app.delete("/api/books/{book_id}/review")
-def delete_review(book_id: int, db: Session = Depends(get_db)):
-    review = db.query(Review).filter(Review.book_id == book_id).first()
-    if review:
-        db.delete(review)
-        db.commit()
-    return {"deleted": True}
 
 
 # ---------- Bulk ISBN import ----------
@@ -514,6 +657,7 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
     cover_file = fields.pop("_cover_file", "")
     source_id = fields.pop("_source_id", "")
     isbn_corrupted = fields.pop("_isbn_corrupted", False)
+    status_corrected = fields.pop("_status_corrected", False)
     tag_names = fields.pop("tags", None)
 
     title = fields.get("title")
@@ -556,13 +700,29 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
     if tag_names is not None:
         book.tags = get_or_create_tags(db, tag_names)
 
-    if review_text:
-        rev = db.query(Review).filter(Review.book_id == book.id).first()
-        if rev:
-            rev.review_text = review_text
-            rev.contains_spoilers = contains_spoilers
-        else:
-            db.add(Review(book_id=book.id, review_text=review_text, contains_spoilers=contains_spoilers))
+    # The flat CSV format only has one Review/Contains Spoilers column,
+    # representing a single "latest read" snapshot (Date Started/Finished/
+    # Rating, already applied to the book above, plus this review text). If
+    # the book has no read history yet, capture that snapshot as its first
+    # read entry; if it already has entries (e.g. from a fuller ZIP restore),
+    # just refresh the most recent one's review text rather than overwriting
+    # per-read dates we don't have better info about here.
+    if review_text or book.date_finished or book.date_started or book.rating:
+        existing_entries = list(book.read_entries)
+        if not existing_entries:
+            db.add(ReadEntry(
+                book_id=book.id,
+                date_started=book.date_started,
+                date_finished=book.date_finished,
+                rating=book.rating,
+                review_text=review_text,
+                contains_spoilers=contains_spoilers,
+            ))
+        elif review_text:
+            latest = sorted(existing_entries, key=lambda e: (e.date_finished or e.date_started or datetime.date.min, e.id))[-1]
+            latest.review_text = review_text
+            latest.contains_spoilers = contains_spoilers
+            latest.updated_at = datetime.datetime.utcnow()
 
     # restore the cover: prefer a bundled image file (zip restore only),
     # else fall back to a stored URL (harmless no-op for external URLs)
@@ -599,6 +759,7 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
         "reason": None,
         "cover_restored": cover_restored,
         "isbn_corrupted": isbn_corrupted,
+        "status_corrected": status_corrected,
     }
 
 
@@ -633,13 +794,15 @@ async def csv_import(
         for b in all_books:
             title_groups.setdefault(b.title.strip().lower(), []).append(b)
 
-        results = {"updated": [], "added": [], "ambiguous": [], "mismatched": [], "skipped": [], "isbn_corrupted_count": 0}
+        results = {"updated": [], "added": [], "ambiguous": [], "mismatched": [], "skipped": [], "isbn_corrupted_count": 0, "status_corrected_count": 0}
         for row in rows:
             outcome = _restore_backup_row(row, db, books_by_id, books_by_isbn, title_groups, zf=None)
             if outcome["kind"] in ("added", "updated"):
                 results[outcome["kind"]].append(outcome["book"])
                 if outcome.get("isbn_corrupted"):
                     results["isbn_corrupted_count"] += 1
+                if outcome.get("status_corrected"):
+                    results["status_corrected_count"] += 1
             elif outcome["kind"] in ("ambiguous", "mismatched"):
                 results[outcome["kind"]].append({"row": row, "reason": outcome["reason"]})
         return results
@@ -813,8 +976,24 @@ CSV_EXPORT_HEADER = [
 ]
 
 
+def _latest_read_entry(b: Book):
+    """The read entry the flat, one-row-per-book CSV export should represent
+    for Review/Contains Spoilers — the most recently active read (mirrors
+    the same "current/latest" logic as _recompute_read_cache)."""
+    entries = list(b.read_entries)
+    if not entries:
+        return None
+    in_progress = [e for e in entries if e.date_started and not e.date_finished]
+    if in_progress:
+        return sorted(in_progress, key=lambda e: (e.date_started, e.id))[-1]
+    finished = [e for e in entries if e.date_finished]
+    if finished:
+        return sorted(finished, key=lambda e: (e.date_finished, e.id))[-1]
+    return sorted(entries, key=lambda e: e.id)[-1]
+
+
 def _book_export_row(b: Book, cover_file: str = "") -> list:
-    review = b.review
+    review = _latest_read_entry(b)
     return [
         b.id,
         b.title,
@@ -920,7 +1099,7 @@ async def import_zip(file: UploadFile = File(...), db: Session = Depends(get_db)
     for b in all_books:
         title_groups.setdefault(b.title.strip().lower(), []).append(b)
 
-    results = {"updated": [], "added": [], "ambiguous": [], "mismatched": [], "covers_restored": 0, "isbn_corrupted_count": 0}
+    results = {"updated": [], "added": [], "ambiguous": [], "mismatched": [], "covers_restored": 0, "isbn_corrupted_count": 0, "status_corrected_count": 0}
 
     for row in rows:
         outcome = _restore_backup_row(row, db, books_by_id, books_by_isbn, title_groups, zf=zf)
@@ -930,6 +1109,8 @@ async def import_zip(file: UploadFile = File(...), db: Session = Depends(get_db)
                 results["covers_restored"] += 1
             if outcome.get("isbn_corrupted"):
                 results["isbn_corrupted_count"] += 1
+            if outcome.get("status_corrected"):
+                results["status_corrected_count"] += 1
         elif outcome["kind"] in ("ambiguous", "mismatched"):
             results[outcome["kind"]].append({"row": row, "reason": outcome["reason"]})
 
@@ -958,18 +1139,22 @@ def book_to_dict(b: Book) -> dict:
         "date_started": b.date_started.isoformat() if b.date_started else None,
         "date_finished": b.date_finished.isoformat() if b.date_finished else None,
         "rating": b.rating,
-        "has_review": b.review is not None,
+        "read_count": len(b.read_entries),
+        "has_reviews": any(e.review_text for e in b.read_entries),
     }
 
 
-def review_to_dict(r: Review) -> dict:
+def read_entry_to_dict(e: ReadEntry) -> dict:
     return {
-        "id": r.id,
-        "book_id": r.book_id,
-        "review_text": r.review_text,
-        "contains_spoilers": r.contains_spoilers,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        "id": e.id,
+        "book_id": e.book_id,
+        "date_started": e.date_started.isoformat() if e.date_started else None,
+        "date_finished": e.date_finished.isoformat() if e.date_finished else None,
+        "rating": e.rating,
+        "review_text": e.review_text,
+        "contains_spoilers": e.contains_spoilers,
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "updated_at": e.updated_at.isoformat() if e.updated_at else None,
     }
 
 
