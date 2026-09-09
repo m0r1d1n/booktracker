@@ -288,7 +288,6 @@ select { color-scheme: light; }
   max-height: 100%;
   overflow: hidden;
 }
-.spine.cover-mode.status-read::before,
 .spine.cover-mode.status-reading::before,
 .spine.cover-mode.status-planning::before,
 .spine.cover-mode.status-unread::before {
@@ -311,7 +310,6 @@ select { color-scheme: light; }
 .spine.no-cover {
   background: linear-gradient(160deg, var(--forest), #2c4238);
 }
-.spine.status-read::before,
 .spine.status-reading::before,
 .spine.status-planning::before,
 .spine.status-unread::before {
@@ -321,10 +319,11 @@ select { color-scheme: light; }
   width: 6px; height: 6px;
   border-radius: 50%;
 }
-.spine.status-read::before { background: var(--brass-bright); box-shadow: 0 0 4px var(--brass-bright); }
-.spine.status-reading::before { background: #7fb08a; }
-.spine.status-planning::before { background: #7f9ab0; }
-.spine.status-unread::before { background: rgba(255,255,255,0.25); }
+/* Read (and Did Not Finish) intentionally get no dot at all — the
+   indicator is meant to flag books that still need attention. */
+.spine.status-unread::before { background: var(--brass-bright); box-shadow: 0 0 4px var(--brass-bright); }
+.spine.status-planning::before { background: #7fb08a; }
+.spine.status-reading::before { background: #7f9ab0; }
 
 .shelf-heading {
   font-family: var(--font-mono);
