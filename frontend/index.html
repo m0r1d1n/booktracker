@@ -20,6 +20,7 @@
   </div>
   <nav class="tabs" id="tabs">
     <button class="tab active" data-view="shelf">Library</button>
+    <button class="tab" data-view="reading">Reading</button>
     <button class="tab" data-view="toread">To Read</button>
     <button class="tab" data-view="library">Edit</button>
     <button class="tab" data-view="reviews">Reviews</button>
@@ -58,7 +59,12 @@
         <button class="mode-btn" data-group="author" type="button">By Author</button>
         <button class="mode-btn" data-group="none" type="button">Flat</button>
       </div>
-      <button class="btn-secondary" id="shelf-shuffle-btn" type="button">Sort A–Z</button>
+      <select id="shelf-sort-select">
+        <option value="shuffle">🔀 Shuffle</option>
+        <option value="title">Sort: Title A–Z</option>
+        <option value="author">Sort: Author A–Z</option>
+        <option value="series">Sort: Series A–Z</option>
+      </select>
       <div class="view-mode-toggle" id="shelf-mode-toggle">
         <button class="mode-btn active" data-mode="spine" type="button">Spines</button>
         <button class="mode-btn" data-mode="full" type="button">Full Covers</button>
@@ -95,9 +101,19 @@
     </div>
     <div id="bulk-bar" class="bulk-bar hidden">
       <span id="bulk-count">0 selected</span>
-      <input type="text" id="bulk-location-input" list="location-list" placeholder="Set location…" />
+      <select id="bulk-field-select">
+        <option value="location">Location</option>
+        <option value="series">Series</option>
+        <option value="authors">Author</option>
+        <option value="tags">Tags</option>
+      </select>
+      <input type="text" id="bulk-value-input" list="location-list" placeholder="Set location…" />
+      <select id="bulk-tags-mode" style="display:none;">
+        <option value="add">Add to existing tags</option>
+        <option value="replace">Replace existing tags</option>
+      </select>
       <button class="btn-secondary" id="bulk-apply-btn">Apply to selected</button>
-      <button class="btn-secondary" id="bulk-clear-location-btn">Clear location for selected</button>
+      <button class="btn-secondary" id="bulk-clear-field-btn">Clear field for selected</button>
       <button class="btn-secondary" id="bulk-clear-btn">Clear selection</button>
     </div>
     <table class="library-table">
@@ -126,24 +142,46 @@
     </div>
   </section>
 
+  <!-- READING VIEW -->
+  <section id="view-reading" class="view">
+    <div class="view-controls">
+      <input type="search" id="reading-search" placeholder="Search title or author…" />
+      <div class="view-mode-toggle" id="reading-mode-toggle">
+        <button class="mode-btn active" data-mode="spine" type="button">Spines</button>
+        <button class="mode-btn" data-mode="full" type="button">Full Covers</button>
+      </div>
+      <select id="reading-sort-select">
+        <option value="shuffle">🔀 Shuffle</option>
+        <option value="title">Sort: Title A–Z</option>
+        <option value="author">Sort: Author A–Z</option>
+        <option value="series">Sort: Series A–Z</option>
+      </select>
+    </div>
+    <p class="hint" style="margin: -8px 0 16px;">Everything marked Reading, across every location.</p>
+    <div id="reading-container" class="shelf-container">
+      <p class="empty-note">Loading…</p>
+    </div>
+  </section>
+
   <!-- TO READ VIEW -->
   <section id="view-toread" class="view">
     <div class="view-controls">
       <input type="search" id="toread-search" placeholder="Search title or author…" />
+      <div class="view-mode-toggle" id="toread-mode-toggle">
+        <button class="mode-btn active" data-mode="spine" type="button">Spines</button>
+        <button class="mode-btn" data-mode="full" type="button">Full Covers</button>
+      </div>
+      <select id="toread-sort-select">
+        <option value="shuffle">🔀 Shuffle</option>
+        <option value="title">Sort: Title A–Z</option>
+        <option value="author">Sort: Author A–Z</option>
+        <option value="series">Sort: Series A–Z</option>
+      </select>
     </div>
-    <p class="hint" style="margin: -8px 0 16px;">Everything marked Reading or Planning to Read, across every location.</p>
-    <table class="library-table">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Author</th>
-          <th>Status</th>
-          <th>Tags</th>
-          <th>Location</th>
-        </tr>
-      </thead>
-      <tbody id="toread-body"></tbody>
-    </table>
+    <p class="hint" style="margin: -8px 0 16px;">Everything marked Planning to Read, across every location.</p>
+    <div id="toread-container" class="shelf-container">
+      <p class="empty-note">Loading…</p>
+    </div>
   </section>
 
   <!-- IMPORT VIEW -->
@@ -175,6 +213,9 @@
           <input type="checkbox" id="csv-enrich-checkbox" style="width:auto;" />
           Also fetch cover art &amp; extra metadata for new books (slower — one lookup per new ISBN)
         </label>
+        <label class="hint" style="display:block; margin-top:14px;">Reading history CSV (optional — pairs with the library CSV above to restore every read, not just the latest)
+          <input type="file" id="csv-entries-file-input" accept=".csv,.tsv,text/csv,text/tab-separated-values" style="margin-top:6px;" />
+        </label>
         <div class="import-actions">
           <button class="btn-primary" id="csv-import-btn">Import CSV</button>
           <span id="csv-import-progress" class="import-progress"></span>
@@ -183,7 +224,7 @@
 
         <hr style="border-color: rgba(193,150,63,0.25); margin: 26px 0;" />
         <h3 style="font-size:16px; margin-bottom:6px;">Restore a full ZIP backup</h3>
-        <p class="hint">If you have a <code>.zip</code> from this app's own "Export as ZIP" (below), upload it here to restore everything — including manually-uploaded cover images. Matches books by ID first, then ISBN, then an unambiguous title match.</p>
+        <p class="hint">If you have a <code>.zip</code> from this app's own "Export as ZIP" (below), upload it here to restore everything — including manually-uploaded cover images and every read-through in your reading history, not just the latest. Matches books by ID first, then ISBN, then an unambiguous title match.</p>
         <input type="file" id="zip-file-input" accept=".zip,application/zip" />
         <div class="import-actions">
           <button class="btn-primary" id="zip-import-btn">Restore ZIP backup</button>
@@ -203,16 +244,23 @@
       </div>
 
       <div id="itab-export" class="itab-pane" style="display:none;">
-        <p class="hint">Download every book in your library — including location, tags, dates, rating and review — as a single CSV file. Handy as a backup, or to move your catalogue somewhere else. Cover images that were manually uploaded aren't included in the plain CSV (only their filename is referenced) — use the ZIP export below if you want those too.</p>
+        <p class="hint">Download every book in your library — including location, tags, dates, rating and review — as a single CSV file. Handy as a backup, or to move your catalogue somewhere else. This represents only the <strong>most recent (or in-progress) read</strong> per book — cover images and older read-throughs aren't included in the plain CSV; use the ZIP export below for those.</p>
         <div class="import-actions">
           <button class="btn-primary" id="export-csv-btn">Export library to CSV</button>
         </div>
 
         <hr style="border-color: rgba(193,150,63,0.25); margin: 26px 0;" />
-        <h3 style="font-size:16px; margin-bottom:6px;">Full backup (includes cover images)</h3>
-        <p class="hint">Same data as above, bundled as a <code>.zip</code> together with the actual image files for any covers you've manually uploaded. Restore it from the "Restore a full ZIP backup" section on the CSV import tab.</p>
+        <h3 style="font-size:16px; margin-bottom:6px;">Reading history (all reads, every book)</h3>
+        <p class="hint">A standalone CSV with one row per read-through — every re-read, with its own dates, rating, and review, across your whole library. Pairs with "Import CSV" above (as the optional reading-history file) to restore full history without needing the ZIP.</p>
         <div class="import-actions">
-          <button class="btn-primary" id="export-zip-btn">Export as ZIP (includes covers)</button>
+          <button class="btn-primary" id="export-entries-csv-btn">Export reading history to CSV</button>
+        </div>
+
+        <hr style="border-color: rgba(193,150,63,0.25); margin: 26px 0;" />
+        <h3 style="font-size:16px; margin-bottom:6px;">Full backup (includes cover images + full reading history)</h3>
+        <p class="hint">Everything above, bundled as a <code>.zip</code> — the library CSV, the actual image files for any manually-uploaded covers, and a reading-history CSV covering every read-through of every book. Restore it from the "Restore a full ZIP backup" section on the CSV import tab. This is the most complete backup format and the one to use if you rebuild fresh and restore each time.</p>
+        <div class="import-actions">
+          <button class="btn-primary" id="export-zip-btn">Export as ZIP (includes covers + full history)</button>
         </div>
       </div>
     </div>
@@ -223,6 +271,7 @@
 <datalist id="location-list"></datalist>
 <datalist id="tag-list"></datalist>
 <datalist id="series-list"></datalist>
+<datalist id="author-list"></datalist>
 
 <!-- BOOK DETAIL / EDIT MODAL -->
 <div id="book-modal" class="modal-overlay hidden">

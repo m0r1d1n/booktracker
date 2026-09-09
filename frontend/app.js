@@ -6,8 +6,11 @@ let currentEntries = [];
 let knownLocations = [];
 let knownTags = [];
 let knownSeries = [];
+let knownAuthors = [];
 let selectedBookIds = new Set();
-let shelfShuffled = true; // shelf opens in random order by default
+let shelfSortMode = ["shuffle", "title", "author", "series"].includes(localStorage.getItem("shelfSortMode"))
+  ? localStorage.getItem("shelfSortMode")
+  : "shuffle"; // shelf opens in random order by default
 let shelfCoverMode = localStorage.getItem("shelfCoverMode") === "full" ? "full" : "spine";
 let shelfGroupMode = ["location", "series", "author", "none"].includes(localStorage.getItem("shelfGroupMode"))
   ? localStorage.getItem("shelfGroupMode")
@@ -52,7 +55,6 @@ function starWidgetHtml(id, value, editable) {
     html += `<span class="star-pos" data-pos="${i}">
       <span class="star-bg">★</span>
       <span class="star-fg" style="width:${fillPct}%">★</span>
-      ${editable ? `<span class="star-click star-click-left" data-value="${i - 0.5}"></span><span class="star-click star-click-right" data-value="${i}"></span>` : ""}
     </span>`;
   }
   html += `</div>`;
@@ -62,17 +64,164 @@ function starWidgetHtml(id, value, editable) {
 function wireStarWidget(id) {
   const container = document.getElementById(id);
   if (!container) return;
-  container.querySelectorAll(".star-click").forEach((el) => {
-    el.addEventListener("click", () => {
-      const newVal = Number(el.dataset.value);
+  container.querySelectorAll(".star-pos").forEach((pos) => {
+    pos.addEventListener("click", (event) => {
+      const rect = pos.getBoundingClientRect();
+      const clickX = event.clientX - rect.left;
+      const isLeftHalf = clickX < rect.width / 2;
+      const i = Number(pos.dataset.pos);
+      const newVal = isLeftHalf ? i - 0.5 : i;
       const current = Number(container.dataset.value);
       const finalVal = current === newVal ? 0 : newVal;
       container.dataset.value = finalVal;
-      container.querySelectorAll(".star-pos").forEach((pos) => {
-        const i = Number(pos.dataset.pos);
-        const fillPct = finalVal >= i ? 100 : finalVal >= i - 0.5 ? 50 : 0;
-        pos.querySelector(".star-fg").style.width = fillPct + "%";
+      container.querySelectorAll(".star-pos").forEach((p) => {
+        const pi = Number(p.dataset.pos);
+        const fillPct = finalVal >= pi ? 100 : finalVal >= pi - 0.5 ? 50 : 0;
+        p.querySelector(".star-fg").style.width = fillPct + "%";
       });
+    });
+  });
+}
+
+function isValidCalendarDate(y, mo, d) {
+  const yy = Number(y), mm = Number(mo), dd = Number(d);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return false;
+  const dt = new Date(yy, mm - 1, dd);
+  return dt.getFullYear() === yy && dt.getMonth() === mm - 1 && dt.getDate() === dd;
+}
+
+// Accepts common date formats a person might type (not just strict ISO) and
+// normalizes to YYYY-MM-DD, or returns null if it can't be parsed as a real
+// calendar date. Used instead of relying on a native <input type="date">
+// picker, whose day-segment can become unreachable in some Firefox layouts.
+function parseLenientDate(str) {
+  if (!str || !str.trim()) return null;
+  const s = str.trim();
+  let m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/); // YYYY-MM-DD or YYYY/MM/DD
+  if (m) {
+    const [, y, mo, d] = m;
+    return isValidCalendarDate(y, mo, d) ? `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}` : null;
+  }
+  m = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/); // MM/DD/YYYY (or MM-DD-YYYY)
+  if (m) {
+    const [, mo, d, y] = m;
+    return isValidCalendarDate(y, mo, d) ? `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}` : null;
+  }
+  return null;
+}
+
+// ---------- self-contained calendar picker ----------
+// A native <input type="date"> proved unreliable in Firefox (day segment
+// unreachable even at full width), so this is a plain HTML/CSS/JS calendar
+// grid instead — no dependency on any browser's native date-picker widget,
+// so it behaves identically everywhere. It's an optional convenience
+// alongside the always-available YYYY-MM-DD text field, never the only way
+// to set a date.
+let openDatePickerEl = null;
+
+function closeDatePicker() {
+  if (openDatePickerEl) {
+    openDatePickerEl.remove();
+    openDatePickerEl = null;
+  }
+}
+
+function openDatePickerFor(targetInputId, anchorBtn) {
+  closeDatePicker();
+  const input = document.getElementById(targetInputId);
+  const parsed = parseLenientDate(input.value);
+  const base = parsed ? new Date(parsed + "T00:00:00") : new Date();
+  let viewYear = base.getFullYear();
+  let viewMonth = base.getMonth();
+
+  const popover = document.createElement("div");
+  popover.className = "date-picker-popover";
+
+  function render() {
+    const firstOfMonth = new Date(viewYear, viewMonth, 1);
+    const startWeekday = firstOfMonth.getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    let cells = "";
+    for (let i = 0; i < startWeekday; i++) cells += `<span class="dp-cell dp-empty"></span>`;
+    for (let d = 1; d <= daysInMonth; d++) {
+      const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const isSelected = parsed === iso;
+      cells += `<button type="button" class="dp-cell dp-day${isSelected ? " dp-selected" : ""}" data-date="${iso}">${d}</button>`;
+    }
+
+    popover.innerHTML = `
+      <div class="dp-header">
+        <button type="button" class="dp-nav" data-nav="prev-year" aria-label="Previous year">«</button>
+        <button type="button" class="dp-nav" data-nav="prev-month" aria-label="Previous month">‹</button>
+        <span class="dp-title">${monthNames[viewMonth]} ${viewYear}</span>
+        <button type="button" class="dp-nav" data-nav="next-month" aria-label="Next month">›</button>
+        <button type="button" class="dp-nav" data-nav="next-year" aria-label="Next year">»</button>
+      </div>
+      <div class="dp-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
+      <div class="dp-grid">${cells}</div>
+      <div class="dp-footer">
+        <button type="button" class="btn-secondary dp-today">Today</button>
+        <button type="button" class="btn-secondary dp-clear">Clear</button>
+      </div>
+    `;
+
+    popover.querySelectorAll("[data-nav]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const nav = btn.dataset.nav;
+        if (nav === "prev-month") { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } }
+        if (nav === "next-month") { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } }
+        if (nav === "prev-year") viewYear--;
+        if (nav === "next-year") viewYear++;
+        render();
+      });
+    });
+    popover.querySelectorAll(".dp-day").forEach((cell) => {
+      cell.addEventListener("click", (e) => {
+        e.stopPropagation();
+        input.value = cell.dataset.date;
+        closeDatePicker();
+      });
+    });
+    popover.querySelector(".dp-today").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const today = new Date();
+      input.value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+      closeDatePicker();
+    });
+    popover.querySelector(".dp-clear").addEventListener("click", (e) => {
+      e.stopPropagation();
+      input.value = "";
+      closeDatePicker();
+    });
+  }
+
+  render();
+  popover.addEventListener("click", (e) => e.stopPropagation());
+  document.body.appendChild(popover);
+
+  const rect = anchorBtn.getBoundingClientRect();
+  const popoverWidth = 260;
+  const estimatedHeight = 320;
+  let top = rect.bottom + 6;
+  if (top + estimatedHeight > window.innerHeight) {
+    top = Math.max(8, rect.top - estimatedHeight - 6);
+  }
+  popover.style.top = `${top}px`;
+  popover.style.left = `${Math.max(8, Math.min(rect.right - popoverWidth, window.innerWidth - popoverWidth - 8))}px`;
+
+  openDatePickerEl = popover;
+}
+
+document.addEventListener("click", () => closeDatePicker());
+
+function wireDatePickerButtons(scopeEl) {
+  scopeEl.querySelectorAll(".date-picker-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDatePickerFor(btn.dataset.target, btn);
     });
   });
 }
@@ -93,6 +242,27 @@ function shuffleArray(arr) {
   return out;
 }
 
+// Applies the current global sort mode. "author"/"series" sort the whole
+// list by that field (falling back to title as a tiebreaker, and sorting
+// blanks last) — this is what lets Flat grouping show one continuous shelf
+// ordered by author/series instead of a separate header per author/series,
+// which otherwise produces a lot of single-book shelves.
+function applySortMode(books) {
+  if (shelfSortMode === "shuffle") return shuffleArray(books);
+  const key = shelfSortMode === "author" ? "authors" : shelfSortMode === "series" ? "series" : null;
+  return [...books].sort((a, b) => {
+    if (key) {
+      const av = a[key] || "";
+      const bv = b[key] || "";
+      if (!av && bv) return 1;
+      if (av && !bv) return -1;
+      const cmp = av.localeCompare(bv);
+      if (cmp !== 0) return cmp;
+    }
+    return a.title.localeCompare(b.title);
+  });
+}
+
 // ---------- tabs ----------
 document.getElementById("tabs").addEventListener("click", (e) => {
   const btn = e.target.closest(".tab");
@@ -104,8 +274,8 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   if (btn.dataset.view === "shelf") loadShelf();
   if (btn.dataset.view === "library") loadLibrary();
   if (btn.dataset.view === "reviews") loadReviews();
-  if (btn.dataset.view === "toread") loadToRead();
-  if (btn.dataset.view === "toread") loadToRead();
+  if (btn.dataset.view === "reading") loadReadingShelf();
+  if (btn.dataset.view === "toread") loadToReadShelf();
 });
 
 // ---------- stats ----------
@@ -152,6 +322,13 @@ async function loadSeries() {
   knownSeries = await api("/series");
   const datalist = document.getElementById("series-list");
   datalist.innerHTML = knownSeries.map((s) => `<option value="${escapeHtml(s)}"></option>`).join("");
+}
+
+// ---------- authors ----------
+async function loadAuthors() {
+  knownAuthors = await api("/authors");
+  const datalist = document.getElementById("author-list");
+  datalist.innerHTML = knownAuthors.map((a) => `<option value="${escapeHtml(a)}"></option>`).join("");
 }
 
 // ---------- shelf view ----------
@@ -204,7 +381,7 @@ document.querySelectorAll("#shelf-mode-toggle .mode-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     shelfCoverMode = btn.dataset.mode;
     localStorage.setItem("shelfCoverMode", shelfCoverMode);
-    document.querySelectorAll("#shelf-mode-toggle .mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    syncAllCoverModeButtons();
     loadShelf();
   });
 });
@@ -225,7 +402,7 @@ async function loadShelf() {
   if (status) params.set("status", status);
   if (tag) params.set("tag", tag);
   let books = await api("/books?" + params.toString());
-  if (shelfShuffled) books = shuffleArray(books);
+  books = applySortMode(books);
   currentBooks = books;
 
   if (books.length === 0) {
@@ -299,9 +476,10 @@ document.querySelectorAll("#shelf-group-toggle .mode-btn").forEach((btn) => {
     loadShelf();
   });
 });
-document.getElementById("shelf-shuffle-btn").addEventListener("click", () => {
-  shelfShuffled = !shelfShuffled;
-  document.getElementById("shelf-shuffle-btn").textContent = shelfShuffled ? "Sort A–Z" : "🔀 Shuffle";
+document.getElementById("shelf-sort-select").addEventListener("change", (e) => {
+  shelfSortMode = e.target.value;
+  localStorage.setItem("shelfSortMode", shelfSortMode);
+  syncAllSortSelects();
   loadShelf();
 });
 
@@ -395,27 +573,71 @@ document.getElementById("bulk-clear-btn").addEventListener("click", () => {
   loadLibrary();
 });
 
+const BULK_FIELD_CONFIG = {
+  location: { datalist: "location-list", placeholder: "Set location…" },
+  series: { datalist: "series-list", placeholder: "Set series…" },
+  authors: { datalist: "author-list", placeholder: "Set author(s)…" },
+  tags: { datalist: "tag-list", placeholder: "Add tag(s), comma-separated…" },
+};
+
+function syncBulkFieldUI() {
+  const field = document.getElementById("bulk-field-select").value;
+  const config = BULK_FIELD_CONFIG[field];
+  const valueInput = document.getElementById("bulk-value-input");
+  valueInput.setAttribute("list", config.datalist);
+  valueInput.placeholder = config.placeholder;
+  document.getElementById("bulk-tags-mode").style.display = field === "tags" ? "" : "none";
+}
+
+document.getElementById("bulk-field-select").addEventListener("change", syncBulkFieldUI);
+syncBulkFieldUI();
+
+async function refreshBulkDatalists() {
+  await Promise.all([loadLocations(), loadSeries(), loadAuthors(), loadTags()]);
+}
+
 document.getElementById("bulk-apply-btn").addEventListener("click", async () => {
-  const location = document.getElementById("bulk-location-input").value.trim();
-  if (!location) { alert("Enter a location to apply."); return; }
-  await api("/books/bulk-location", {
-    method: "POST",
-    body: JSON.stringify({ book_ids: Array.from(selectedBookIds), location }),
-  });
-  document.getElementById("bulk-location-input").value = "";
+  const field = document.getElementById("bulk-field-select").value;
+  const rawValue = document.getElementById("bulk-value-input").value.trim();
+  if (!rawValue) { alert("Enter a value to apply."); return; }
+
+  if (field === "tags") {
+    const mode = document.getElementById("bulk-tags-mode").value;
+    const tags = rawValue.split(",").map((t) => t.trim()).filter(Boolean);
+    await api("/books/bulk-tags", {
+      method: "POST",
+      body: JSON.stringify({ book_ids: Array.from(selectedBookIds), tags, mode }),
+    });
+  } else {
+    await api("/books/bulk-field", {
+      method: "POST",
+      body: JSON.stringify({ book_ids: Array.from(selectedBookIds), field, value: rawValue }),
+    });
+  }
+  document.getElementById("bulk-value-input").value = "";
   selectedBookIds.clear();
-  await loadLocations();
+  await refreshBulkDatalists();
   loadLibrary();
 });
 
-document.getElementById("bulk-clear-location-btn").addEventListener("click", async () => {
-  if (!confirm(`Clear the location field for ${selectedBookIds.size} selected book(s)?`)) return;
-  await api("/books/bulk-location", {
-    method: "POST",
-    body: JSON.stringify({ book_ids: Array.from(selectedBookIds), location: null }),
-  });
+document.getElementById("bulk-clear-field-btn").addEventListener("click", async () => {
+  const field = document.getElementById("bulk-field-select").value;
+  const fieldLabel = document.getElementById("bulk-field-select").selectedOptions[0].text;
+  if (!confirm(`Clear ${fieldLabel} for ${selectedBookIds.size} selected book(s)?`)) return;
+
+  if (field === "tags") {
+    await api("/books/bulk-tags", {
+      method: "POST",
+      body: JSON.stringify({ book_ids: Array.from(selectedBookIds), tags: [], mode: "replace" }),
+    });
+  } else {
+    await api("/books/bulk-field", {
+      method: "POST",
+      body: JSON.stringify({ book_ids: Array.from(selectedBookIds), field, value: null }),
+    });
+  }
   selectedBookIds.clear();
-  await loadLocations();
+  await refreshBulkDatalists();
   loadLibrary();
 });
 
@@ -448,43 +670,63 @@ async function loadReviews() {
 }
 
 // ---------- to read view ----------
-async function loadToRead() {
-  const body = document.getElementById("toread-body");
-  body.innerHTML = '<tr><td colspan="5" class="empty-note">Loading…</td></tr>';
-  const search = document.getElementById("toread-search").value.trim().toLowerCase();
-
-  const [reading, planning] = await Promise.all([
-    api("/books?status=reading"),
-    api("/books?status=planning"),
-  ]);
-  let books = [...reading, ...planning].sort((a, b) => a.title.localeCompare(b.title));
-  if (search) {
-    books = books.filter((b) =>
-      b.title.toLowerCase().includes(search) || (b.authors || "").toLowerCase().includes(search)
-    );
-  }
-
-  if (books.length === 0) {
-    body.innerHTML = '<tr><td colspan="5" class="empty-note">Nothing here yet — mark a book Reading or Planning to Read from its edit modal.</td></tr>';
-    return;
-  }
-
-  body.innerHTML = books.map((b) => `
-    <tr>
-      <td class="title-cell" data-id="${b.id}">${escapeHtml(b.title)}</td>
-      <td>${escapeHtml(b.authors || "—")}</td>
-      <td><span class="status-pill ${b.status}">${STATUS_LABELS[b.status] || b.status}</span></td>
-      <td class="tags-cell">${(b.tags || []).map((t) => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("") || "—"}</td>
-      <td>${escapeHtml(b.location || "—")}</td>
-    </tr>
-  `).join("");
-
-  body.querySelectorAll(".title-cell").forEach((el) =>
-    el.addEventListener("click", () => openBookModal(Number(el.dataset.id)))
-  );
+// ---------- Reading / To Read shelf-style views ----------
+// Reuses the same visual shelf/spine rendering as the Library page (buildShelfRows,
+// the global Spines/Full-Covers mode, and the shared sort-mode dropdown), just
+// scoped to a fixed status and never grouped by location.
+function syncAllSortSelects() {
+  ["shelf-sort-select", "reading-sort-select", "toread-sort-select"].forEach((id) => {
+    const sel = document.getElementById(id);
+    if (sel) sel.value = shelfSortMode;
+  });
 }
 
-document.getElementById("toread-search").addEventListener("input", debounce(loadToRead, 300));
+function syncAllCoverModeButtons() {
+  document.querySelectorAll(".view-mode-toggle .mode-btn[data-mode]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === shelfCoverMode);
+  });
+}
+
+function makeStatusShelfLoader(prefix, status) {
+  async function load() {
+    const container = document.getElementById(`${prefix}-container`);
+    container.innerHTML = '<p class="empty-note">Loading…</p>';
+    const search = document.getElementById(`${prefix}-search`).value.trim();
+    const params = new URLSearchParams({ status });
+    if (search) params.set("search", search);
+    let books = await api("/books?" + params.toString());
+    books = applySortMode(books);
+    container.innerHTML = "";
+    if (books.length === 0) {
+      container.innerHTML = '<p class="empty-note">Nothing here yet.</p>';
+      return;
+    }
+    buildShelfRows(container, books);
+  }
+
+  document.getElementById(`${prefix}-search`).addEventListener("input", debounce(load, 300));
+  document.getElementById(`${prefix}-sort-select`).addEventListener("change", (e) => {
+    shelfSortMode = e.target.value;
+    localStorage.setItem("shelfSortMode", shelfSortMode);
+    syncAllSortSelects();
+    load();
+  });
+  document.querySelectorAll(`#${prefix}-mode-toggle .mode-btn`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      shelfCoverMode = btn.dataset.mode;
+      localStorage.setItem("shelfCoverMode", shelfCoverMode);
+      syncAllCoverModeButtons();
+      load();
+    });
+  });
+
+  return load;
+}
+
+const loadReadingShelf = makeStatusShelfLoader("reading", "reading");
+const loadToReadShelf = makeStatusShelfLoader("toread", "planning");
+syncAllCoverModeButtons();
+syncAllSortSelects();
 
 // ---------- import view ----------
 document.getElementById("import-btn").addEventListener("click", async () => {
@@ -531,6 +773,8 @@ document.getElementById("csv-import-btn").addEventListener("click", async () => 
   const file = fileInput.files[0];
   if (!file) { alert("Choose a CSV/TSV file first."); return; }
   const enrich = document.getElementById("csv-enrich-checkbox").checked;
+  const entriesFileInput = document.getElementById("csv-entries-file-input");
+  const entriesFile = entriesFileInput.files[0];
   const progress = document.getElementById("csv-import-progress");
   const resultsEl = document.getElementById("csv-import-results");
   const btn = document.getElementById("csv-import-btn");
@@ -538,6 +782,7 @@ document.getElementById("csv-import-btn").addEventListener("click", async () => 
   const form = new FormData();
   form.append("file", file);
   form.append("enrich", enrich ? "true" : "false");
+  if (entriesFile) form.append("entries_file", entriesFile);
 
   btn.disabled = true;
   progress.textContent = "Importing… this can take a moment for large files.";
@@ -557,6 +802,9 @@ document.getElementById("csv-import-btn").addEventListener("click", async () => 
     (result.ambiguous || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Ambiguous — ${escapeHtml(r.reason)} (${escapeHtml(r.row.Title || "")})</div>`));
     (result.mismatched || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Mismatch — ${escapeHtml(r.reason)}</div>`));
     (result.skipped || []).forEach((s) => lines.push(`<div class="result-line notfound">✗ Skipped — ${s.reason}</div>`));
+    if (result.read_entries_restored) {
+      lines.unshift(`<div class="result-line added">✓ Restored ${result.read_entries_restored} read-through(s) from the reading history file${result.read_entries_skipped ? ` (${result.read_entries_skipped} skipped — no matching book found)` : ""}.</div>`);
+    }
     if (result.isbn_corrupted_count) {
       lines.unshift(`<div class="result-line notfound">⚠ ${result.isbn_corrupted_count} row(s) had an ISBN mangled into scientific notation (likely from opening the CSV in Excel/Sheets) — those ISBNs were left untouched rather than overwritten with corrupted data. Matching still worked via the ID column.</div>`);
     }
@@ -565,10 +813,12 @@ document.getElementById("csv-import-btn").addEventListener("click", async () => 
     }
     resultsEl.innerHTML = lines.join("") || '<div class="result-line dup">No rows processed.</div>';
     fileInput.value = "";
+    entriesFileInput.value = "";
     loadStats();
     loadLocations();
     loadTags();
     loadSeries();
+    loadAuthors();
   } catch (err) {
     progress.textContent = "Import failed: " + err.message;
   } finally {
@@ -621,7 +871,11 @@ document.getElementById("export-csv-btn").addEventListener("click", () => {
   window.location.href = API + "/export/csv";
 });
 
-// ---------- ZIP export (includes cover images) ----------
+document.getElementById("export-entries-csv-btn").addEventListener("click", () => {
+  window.location.href = API + "/export/read-entries.csv";
+});
+
+// ---------- ZIP export (includes cover images + full reading history) ----------
 document.getElementById("export-zip-btn").addEventListener("click", () => {
   window.location.href = API + "/export/zip";
 });
@@ -649,12 +903,16 @@ document.getElementById("zip-import-btn").addEventListener("click", async () => 
       throw new Error(j.detail || res.statusText);
     }
     const result = await res.json();
-    progress.textContent = `Done — ${result.covers_restored} cover image(s) restored.`;
+    const entriesNote = result.read_entries_restored ? `, ${result.read_entries_restored} read(s) restored to history` : "";
+    progress.textContent = `Done — ${result.covers_restored} cover image(s) restored${entriesNote}.`;
     const lines = [];
     result.updated.forEach((b) => lines.push(`<div class="result-line added">✓ Updated — ${escapeHtml(b.title)}</div>`));
     result.added.forEach((b) => lines.push(`<div class="result-line added">✓ Added — ${escapeHtml(b.title)}</div>`));
     (result.mismatched || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Mismatch — ${escapeHtml(r.reason)}</div>`));
     (result.ambiguous || []).forEach((r) => lines.push(`<div class="result-line notfound">⚠ Ambiguous — ${escapeHtml(r.reason)}</div>`));
+    if (result.read_entries_skipped) {
+      lines.unshift(`<div class="result-line notfound">⚠ ${result.read_entries_skipped} reading-history row(s) skipped — no matching book found.</div>`);
+    }
     if (result.isbn_corrupted_count) {
       lines.unshift(`<div class="result-line notfound">⚠ ${result.isbn_corrupted_count} row(s) had an ISBN mangled into scientific notation (likely from opening the CSV in Excel/Sheets) — those ISBNs were left untouched rather than overwritten with corrupted data. Matching still worked via the ID column.</div>`);
     }
@@ -667,6 +925,7 @@ document.getElementById("zip-import-btn").addEventListener("click", async () => 
     loadLocations();
     loadTags();
     loadSeries();
+    loadAuthors();
   } catch (err) {
     progress.textContent = "Restore failed: " + err.message;
   } finally {
@@ -682,6 +941,7 @@ modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) c
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
 function closeModal() {
+  closeDatePicker();
   modalOverlay.classList.add("hidden");
   currentModalBookId = null;
   refreshCurrentView();
@@ -692,11 +952,13 @@ function refreshCurrentView() {
   if (active === "shelf") loadShelf();
   if (active === "library") loadLibrary();
   if (active === "reviews") loadReviews();
-  if (active === "toread") loadToRead();
+  if (active === "reading") loadReadingShelf();
+  if (active === "toread") loadToReadShelf();
   loadStats();
   loadLocations();
   loadTags();
   loadSeries();
+  loadAuthors();
 }
 
 async function openBookModal(bookId, initialTab = "details") {
@@ -826,10 +1088,16 @@ function renderEntryForm(entry) {
     <div class="entry-form" id="entry-form">
       <div class="form-grid">
         <label class="full">Started
-          <input type="date" id="ef-started" value="${entry?.date_started || ""}" />
+          <div class="date-input-group">
+            <input type="text" id="ef-started" class="date-text-input" value="${entry?.date_started || ""}" placeholder="YYYY-MM-DD" />
+            <button type="button" class="date-picker-btn" data-target="ef-started" aria-label="Pick a date">📅</button>
+          </div>
         </label>
         <label class="full">Finished
-          <input type="date" id="ef-finished" value="${entry?.date_finished || ""}" />
+          <div class="date-input-group">
+            <input type="text" id="ef-finished" class="date-text-input" value="${entry?.date_finished || ""}" placeholder="YYYY-MM-DD" />
+            <button type="button" class="date-picker-btn" data-target="ef-finished" aria-label="Pick a date">📅</button>
+          </div>
         </label>
         <label class="full">Rating
           ${starWidgetHtml("ef-rating", entry?.rating || 0, true)}
@@ -881,6 +1149,7 @@ function openEntryForm(entryId) {
   container.innerHTML = renderEntryForm(entry);
   document.getElementById("add-entry-btn").style.display = "none";
   wireStarWidget("ef-rating");
+  wireDatePickerButtons(container);
 
   document.getElementById("ef-cancel-btn").addEventListener("click", () => {
     container.innerHTML = "";
@@ -888,9 +1157,15 @@ function openEntryForm(entryId) {
   });
 
   document.getElementById("ef-save-btn").addEventListener("click", async () => {
+    const startedRaw = document.getElementById("ef-started").value;
+    const finishedRaw = document.getElementById("ef-finished").value;
+    const startedDate = startedRaw.trim() ? parseLenientDate(startedRaw) : null;
+    const finishedDate = finishedRaw.trim() ? parseLenientDate(finishedRaw) : null;
+    if (startedRaw.trim() && !startedDate) { alert("Started date isn't a valid date. Try YYYY-MM-DD (e.g. 2024-01-31)."); return; }
+    if (finishedRaw.trim() && !finishedDate) { alert("Finished date isn't a valid date. Try YYYY-MM-DD (e.g. 2024-01-31)."); return; }
     const payload = {
-      date_started: document.getElementById("ef-started").value || null,
-      date_finished: document.getElementById("ef-finished").value || null,
+      date_started: startedDate,
+      date_finished: finishedDate,
       rating: Number(document.getElementById("ef-rating").dataset.value) || null,
       review_text: document.getElementById("ef-review-text").value,
       contains_spoilers: document.getElementById("ef-spoilers").checked,
@@ -1085,4 +1360,5 @@ loadStats();
 loadLocations();
 loadTags();
 loadSeries();
+loadAuthors();
 loadShelf();

@@ -19,7 +19,7 @@ from sqlalchemy import or_, func, text
 from database import Base, engine, get_db, SessionLocal, DATA_DIR
 from models import Book, ReadEntry, ReadStatus, Tag
 from isbn_lookup import lookup_isbn, clean_isbn
-from csv_import import parse_rows, map_row, map_backup_row
+from csv_import import parse_rows, map_row, map_backup_row, _parse_date, TRUE_VALUES
 
 COVERS_DIR = os.path.join(DATA_DIR, "covers")
 os.makedirs(COVERS_DIR, exist_ok=True)
@@ -257,9 +257,16 @@ class ImportRequest(BaseModel):
     isbns: List[str]
 
 
-class BulkLocationRequest(BaseModel):
+class BulkFieldRequest(BaseModel):
     book_ids: List[int]
-    location: Optional[str] = None
+    field: str  # "location" | "series" | "authors"
+    value: Optional[str] = None
+
+
+class BulkTagsRequest(BaseModel):
+    book_ids: List[int]
+    tags: List[str] = []
+    mode: str = "add"  # "add" (keep existing tags, add these) or "replace"
 
 
 # ---------- Book routes ----------
@@ -326,23 +333,65 @@ def list_series(db: Session = Depends(get_db)):
     return [r[0] for r in rows]
 
 
+@app.get("/api/authors")
+def list_authors(db: Session = Depends(get_db)):
+    rows = (
+        db.query(Book.authors)
+        .filter(Book.authors.isnot(None), Book.authors != "")
+        .distinct()
+        .order_by(Book.authors)
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
 @app.get("/api/tags")
 def list_tags(db: Session = Depends(get_db)):
     tags = db.query(Tag).order_by(Tag.name).all()
     return [t.name for t in tags]
 
 
-@app.post("/api/books/bulk-location")
-def bulk_set_location(payload: BulkLocationRequest, db: Session = Depends(get_db)):
+BULK_EDITABLE_FIELDS = {"location", "series", "authors"}
+
+
+@app.post("/api/books/bulk-field")
+def bulk_set_field(payload: BulkFieldRequest, db: Session = Depends(get_db)):
     if not payload.book_ids:
         raise HTTPException(400, "No books selected")
+    if payload.field not in BULK_EDITABLE_FIELDS:
+        raise HTTPException(400, f"Unsupported field for bulk edit: {payload.field}")
+    column = getattr(Book, payload.field)
     updated = (
         db.query(Book)
         .filter(Book.id.in_(payload.book_ids))
-        .update({Book.location: payload.location}, synchronize_session=False)
+        .update({column: payload.value}, synchronize_session=False)
     )
     db.commit()
     return {"updated": updated}
+
+
+@app.post("/api/books/bulk-tags")
+def bulk_set_tags(payload: BulkTagsRequest, db: Session = Depends(get_db)):
+    if not payload.book_ids:
+        raise HTTPException(400, "No books selected")
+    if payload.mode not in {"add", "replace"}:
+        raise HTTPException(400, "mode must be 'add' or 'replace'")
+
+    books = db.query(Book).filter(Book.id.in_(payload.book_ids)).all()
+    tag_objs = get_or_create_tags(db, payload.tags) if payload.tags else []
+
+    for book in books:
+        if payload.mode == "replace":
+            book.tags = tag_objs
+        else:
+            existing_names = {t.name.lower() for t in book.tags}
+            for t in tag_objs:
+                if t.name.lower() not in existing_names:
+                    book.tags.append(t)
+                    existing_names.add(t.name.lower())
+
+    db.commit()
+    return {"updated": len(books)}
 
 
 @app.get("/api/books/lookup/{isbn}")
@@ -644,12 +693,18 @@ def _looks_like_own_export(rows: list) -> bool:
 
 
 def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn: dict,
-                         title_groups: dict, zf=None) -> dict:
+                         title_groups: dict, zf=None, skip_entry_bootstrap: bool = False) -> dict:
     """Apply one row from this app's own CSV/ZIP export format — the single
     source of truth for restoring a backup, shared by the ZIP restore and
     the CSV importer's own-format auto-detection, so both stay in sync.
     Returns {"kind": "added"|"updated"|"ambiguous"|"mismatched"|"skipped",
-    "book": <dict>|None, "reason": <str>|None, "cover_restored": bool}."""
+    "book": <dict>|None, "reason": <str>|None, "cover_restored": bool,
+    "source_id": <str>, "book_obj": <Book>|None}.
+
+    skip_entry_bootstrap=True is used when a full read_entries.csv is being
+    restored alongside this row — in that case the single "latest read"
+    snapshot in this row would otherwise create a duplicate of what the full
+    history import is about to add, so it's skipped here instead."""
     fields = map_backup_row(row)
     review_text = fields.pop("_review_text", "")
     contains_spoilers = fields.pop("_contains_spoilers", False)
@@ -674,19 +729,21 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
             book = candidates[0]
         elif len(candidates) > 1:
             return {"kind": "ambiguous", "book": None,
-                    "reason": f"{len(candidates)} books share this title", "cover_restored": False}
+                    "reason": f"{len(candidates)} books share this title", "cover_restored": False,
+                    "source_id": source_id, "book_obj": None}
 
     if book and title and _normalize_title(title) != _normalize_title(book.title):
         return {
             "kind": "mismatched", "book": None,
             "reason": f'row matched "{book.title}" but its Title column says "{title}" — skipped, check this row',
-            "cover_restored": False,
+            "cover_restored": False, "source_id": source_id, "book_obj": None,
         }
 
     is_new = False
     if not book:
         if not title:
-            return {"kind": "skipped", "book": None, "reason": "no title and no existing match", "cover_restored": False}
+            return {"kind": "skipped", "book": None, "reason": "no title and no existing match", "cover_restored": False,
+                    "source_id": source_id, "book_obj": None}
         book = Book(**fields)
         db.add(book)
         db.flush()
@@ -706,8 +763,10 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
     # the book has no read history yet, capture that snapshot as its first
     # read entry; if it already has entries (e.g. from a fuller ZIP restore),
     # just refresh the most recent one's review text rather than overwriting
-    # per-read dates we don't have better info about here.
-    if review_text or book.date_finished or book.date_started or book.rating:
+    # per-read dates we don't have better info about here. Skipped entirely
+    # when a full read_entries.csv is about to restore complete history, to
+    # avoid creating a duplicate of what that file already covers.
+    if not skip_entry_bootstrap and (review_text or book.date_finished or book.date_started or book.rating):
         existing_entries = list(book.read_entries)
         if not existing_entries:
             db.add(ReadEntry(
@@ -745,7 +804,18 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
 
     db.commit()
     db.refresh(book)
-    books_by_id[book.id] = book
+    # IMPORTANT: only re-index by ID for books that already existed before
+    # this restore run — never for newly-created ones. A fresh database
+    # assigns brand-new sequential IDs based on file/alphabetical order,
+    # which has no relationship to the historical ID recorded in the CSV.
+    # Adding a newly-created book's fresh ID here let it collide with a
+    # *different*, unrelated row's recorded historical ID later in the same
+    # run (e.g. after a rename shifts a book's alphabetical position), which
+    # incorrectly matched that unrelated book and caused the real match to
+    # be skipped as a false "mismatch". ISBN and title indexes are still
+    # updated below, since those genuinely identify the same real book.
+    if not is_new:
+        books_by_id[book.id] = book
     if book.isbn:
         books_by_isbn[book.isbn] = book
     key = book.title.strip().lower()
@@ -760,13 +830,91 @@ def _restore_backup_row(row: dict, db: Session, books_by_id: dict, books_by_isbn
         "cover_restored": cover_restored,
         "isbn_corrupted": isbn_corrupted,
         "status_corrected": status_corrected,
+        "source_id": source_id,
+        "book_obj": book,
     }
+
+
+READ_ENTRY_EXPORT_HEADER = [
+    "Book ID", "Book Title", "Entry ID", "Date Started", "Date Finished",
+    "Rating", "Review", "Contains Spoilers", "Created At", "Updated At",
+]
+
+
+def _read_entry_export_row(book: Book, e: ReadEntry) -> list:
+    return [
+        book.id,
+        book.title,
+        e.id,
+        e.date_started.isoformat() if e.date_started else "",
+        e.date_finished.isoformat() if e.date_finished else "",
+        e.rating if e.rating is not None else "",
+        e.review_text or "",
+        "true" if e.contains_spoilers else "false",
+        e.created_at.isoformat() if e.created_at else "",
+        e.updated_at.isoformat() if e.updated_at else "",
+    ]
+
+
+def _restore_read_entries_rows(rows: list, id_to_book: dict, title_to_book: dict, db: Session) -> dict:
+    """Restore full reading-history rows (from read_entries.csv) against
+    already-restored books. Matches each row to a book by the *original*
+    Book ID recorded in the row (mapped through id_to_book, which the caller
+    builds while processing library.csv, since a fresh-build restore creates
+    books with new IDs) — falling back to an exact book-title match. Recomputes
+    each affected book's cached summary once all rows are processed."""
+    restored = 0
+    skipped = 0
+    affected_book_ids = set()
+
+    for row in rows:
+        lower_map = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        old_book_id = lower_map.get("book id", "")
+        book_title = lower_map.get("book title", "")
+
+        book = None
+        if old_book_id and old_book_id.isdigit():
+            book = id_to_book.get(int(old_book_id))
+        if not book and book_title:
+            book = title_to_book.get(book_title.strip().lower())
+        if not book:
+            skipped += 1
+            continue
+
+        rating_raw = lower_map.get("rating", "")
+        rating = None
+        if rating_raw:
+            try:
+                rating = float(rating_raw)
+            except ValueError:
+                rating = None
+
+        db.add(ReadEntry(
+            book_id=book.id,
+            date_started=_parse_date(lower_map.get("date started", "")),
+            date_finished=_parse_date(lower_map.get("date finished", "")),
+            rating=rating,
+            review_text=lower_map.get("review", ""),
+            contains_spoilers=lower_map.get("contains spoilers", "").lower() in TRUE_VALUES,
+        ))
+        restored += 1
+        affected_book_ids.add(book.id)
+
+    db.flush()
+    for book_id in affected_book_ids:
+        affected_book = db.query(Book).get(book_id)
+        if affected_book:
+            _recompute_read_cache(affected_book)
+    db.commit()
+
+    return {"restored": restored, "skipped": skipped}
 
 
 @app.post("/api/import/csv")
 async def csv_import(
     file: UploadFile = File(...),
     enrich: bool = Form(False),
+    entries_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
 ):
     raw_bytes = await file.read()
@@ -778,6 +926,15 @@ async def csv_import(
     rows = parse_rows(text)
     if not rows:
         raise HTTPException(400, "No rows found — check the file is a CSV/TSV export")
+
+    entries_rows = None
+    if entries_file is not None:
+        entries_raw = await entries_file.read()
+        try:
+            entries_text = entries_raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            entries_text = entries_raw.decode("latin-1")
+        entries_rows = parse_rows(entries_text)
 
     if _looks_like_own_export(rows):
         # This is a re-upload of this app's own CSV export (it has our ID +
@@ -795,16 +952,31 @@ async def csv_import(
             title_groups.setdefault(b.title.strip().lower(), []).append(b)
 
         results = {"updated": [], "added": [], "ambiguous": [], "mismatched": [], "skipped": [], "isbn_corrupted_count": 0, "status_corrected_count": 0}
+        id_to_book: dict[int, Book] = {}
+        title_to_book: dict[str, Book] = {}
         for row in rows:
-            outcome = _restore_backup_row(row, db, books_by_id, books_by_isbn, title_groups, zf=None)
+            outcome = _restore_backup_row(
+                row, db, books_by_id, books_by_isbn, title_groups, zf=None,
+                skip_entry_bootstrap=entries_rows is not None,
+            )
             if outcome["kind"] in ("added", "updated"):
                 results[outcome["kind"]].append(outcome["book"])
                 if outcome.get("isbn_corrupted"):
                     results["isbn_corrupted_count"] += 1
                 if outcome.get("status_corrected"):
                     results["status_corrected_count"] += 1
+                if outcome.get("book_obj") and outcome.get("source_id", "").isdigit():
+                    id_to_book[int(outcome["source_id"])] = outcome["book_obj"]
+                if outcome.get("book_obj"):
+                    title_to_book[outcome["book_obj"].title.strip().lower()] = outcome["book_obj"]
             elif outcome["kind"] in ("ambiguous", "mismatched"):
                 results[outcome["kind"]].append({"row": row, "reason": outcome["reason"]})
+
+        if entries_rows is not None:
+            entry_result = _restore_read_entries_rows(entries_rows, id_to_book, title_to_book, db)
+            results["read_entries_restored"] = entry_result["restored"]
+            results["read_entries_skipped"] = entry_result["skipped"]
+
         return results
 
     results = {"updated": [], "added": [], "skipped": []}
@@ -1043,12 +1215,18 @@ def export_csv(db: Session = Depends(get_db)):
 @app.get("/api/export/zip")
 def export_zip(db: Session = Depends(get_db)):
     """Full backup: the same data as the plain CSV export, plus the actual
-    image files for any manually-uploaded covers, bundled together so the
-    whole library — including cover art — can be restored elsewhere."""
+    image files for any manually-uploaded covers and a read_entries.csv with
+    every read-through of every book (not just the latest), bundled together
+    so the whole library — including cover art and full reading history —
+    can be restored elsewhere."""
     books = db.query(Book).order_by(Book.title).all()
     csv_buffer = io.StringIO()
     writer = csv.writer(csv_buffer, quoting=csv.QUOTE_ALL)
     writer.writerow(CSV_EXPORT_HEADER)
+
+    entries_buffer = io.StringIO()
+    entries_writer = csv.writer(entries_buffer, quoting=csv.QUOTE_ALL)
+    entries_writer.writerow(READ_ENTRY_EXPORT_HEADER)
 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1061,7 +1239,13 @@ def export_zip(db: Session = Depends(get_db)):
                     cover_file = fname
                     zf.write(src_path, arcname=f"covers/{fname}")
             writer.writerow(_book_export_row(b, cover_file))
+
+            entries = sorted(b.read_entries, key=lambda e: (e.date_started or datetime.date.min, e.id))
+            for e in entries:
+                entries_writer.writerow(_read_entry_export_row(b, e))
+
         zf.writestr("library.csv", csv_buffer.getvalue())
+        zf.writestr("read_entries.csv", entries_buffer.getvalue())
 
     zip_buffer.seek(0)
     filename = f"library-backup-{datetime.date.today().isoformat()}.zip"
@@ -1072,11 +1256,34 @@ def export_zip(db: Session = Depends(get_db)):
     )
 
 
+@app.get("/api/export/read-entries.csv")
+def export_read_entries_csv(db: Session = Depends(get_db)):
+    """Standalone export of full reading history (every read-through of
+    every book), independent of the ZIP backup — useful if you just want the
+    history data without images, e.g. for a spreadsheet."""
+    books = db.query(Book).order_by(Book.title).all()
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+    writer.writerow(READ_ENTRY_EXPORT_HEADER)
+    for b in books:
+        entries = sorted(b.read_entries, key=lambda e: (e.date_started or datetime.date.min, e.id))
+        for e in entries:
+            writer.writerow(_read_entry_export_row(b, e))
+
+    filename = f"reading-history-{datetime.date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/import/zip")
 async def import_zip(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Restore a full backup produced by /api/export/zip — matches books by
     this app's own ID first (most reliable), then ISBN, then an unambiguous
-    title match, and restores any bundled cover images."""
+    title match, and restores any bundled cover images and full reading
+    history (if the zip includes a read_entries.csv, as newer exports do)."""
     raw = await file.read()
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
@@ -1092,6 +1299,12 @@ async def import_zip(file: UploadFile = File(...), db: Session = Depends(get_db)
     if not rows:
         raise HTTPException(400, "No rows found in library.csv")
 
+    entries_name = next((n for n in zf.namelist() if n.lower().endswith("read_entries.csv")), None)
+    entries_rows = None
+    if entries_name:
+        entries_text = zf.read(entries_name).decode("utf-8-sig")
+        entries_rows = parse_rows(entries_text)
+
     all_books = db.query(Book).all()
     books_by_id = {b.id: b for b in all_books}
     books_by_isbn = {b.isbn: b for b in all_books if b.isbn}
@@ -1100,9 +1313,14 @@ async def import_zip(file: UploadFile = File(...), db: Session = Depends(get_db)
         title_groups.setdefault(b.title.strip().lower(), []).append(b)
 
     results = {"updated": [], "added": [], "ambiguous": [], "mismatched": [], "covers_restored": 0, "isbn_corrupted_count": 0, "status_corrected_count": 0}
+    id_to_book: dict[int, Book] = {}
+    title_to_book: dict[str, Book] = {}
 
     for row in rows:
-        outcome = _restore_backup_row(row, db, books_by_id, books_by_isbn, title_groups, zf=zf)
+        outcome = _restore_backup_row(
+            row, db, books_by_id, books_by_isbn, title_groups, zf=zf,
+            skip_entry_bootstrap=entries_rows is not None,
+        )
         if outcome["kind"] in ("added", "updated"):
             results[outcome["kind"]].append(outcome["book"])
             if outcome.get("cover_restored"):
@@ -1111,8 +1329,17 @@ async def import_zip(file: UploadFile = File(...), db: Session = Depends(get_db)
                 results["isbn_corrupted_count"] += 1
             if outcome.get("status_corrected"):
                 results["status_corrected_count"] += 1
+            if outcome.get("book_obj") and outcome.get("source_id", "").isdigit():
+                id_to_book[int(outcome["source_id"])] = outcome["book_obj"]
+            if outcome.get("book_obj"):
+                title_to_book[outcome["book_obj"].title.strip().lower()] = outcome["book_obj"]
         elif outcome["kind"] in ("ambiguous", "mismatched"):
             results[outcome["kind"]].append({"row": row, "reason": outcome["reason"]})
+
+    if entries_rows is not None:
+        entry_result = _restore_read_entries_rows(entries_rows, id_to_book, title_to_book, db)
+        results["read_entries_restored"] = entry_result["restored"]
+        results["read_entries_skipped"] = entry_result["skipped"]
 
     return results
 

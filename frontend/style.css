@@ -134,6 +134,53 @@ input[type="date"] {
   min-width: 150px;
   color-scheme: dark;
 }
+.date-text-input { font-family: var(--font-mono); letter-spacing: 0.5px; }
+.date-input-group { display: flex; gap: 6px; align-items: stretch; }
+.date-input-group input { flex: 1; min-width: 0; }
+.date-picker-btn {
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(193,150,63,0.4);
+  border-radius: 6px;
+  font-size: 16px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+.date-picker-btn:hover { background: rgba(255,255,255,0.12); }
+
+.date-picker-popover {
+  position: fixed;
+  z-index: 300;
+  width: 260px;
+  background: var(--walnut);
+  border: 1px solid var(--brass);
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.5);
+  padding: 12px;
+  font-family: var(--font-body);
+}
+.dp-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.dp-nav { background: none; border: none; color: var(--brass-bright); font-size: 15px; cursor: pointer; padding: 2px 6px; }
+.dp-nav:hover { color: var(--parchment); }
+.dp-title { font-size: 13px; font-weight: 600; color: var(--parchment); }
+.dp-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-family: var(--font-mono); font-size: 10px; color: var(--parchment-dim); margin-bottom: 4px; }
+.dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.dp-cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.dp-day { background: none; border: none; color: var(--parchment); cursor: pointer; border-radius: 4px; }
+.dp-day:hover { background: rgba(193,150,63,0.25); }
+.dp-day.dp-selected { background: var(--brass); color: var(--ink); font-weight: 600; }
+.dp-footer { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.dp-footer button { flex: 1; font-size: 12px; padding: 6px 10px; }
+/* Native <option> popups render on the OS's own (usually light) background
+   regardless of the select's custom styling, but still inherit our light
+   "parchment" text color meant for the closed box — giving light-on-light,
+   unreadable text. Force dark text on a light background for the options
+   list specifically. */
+select option {
+  color: #1a1a1a;
+  background: #ffffff;
+}
+select { color-scheme: light; }
 ::placeholder { color: rgba(241,230,206,0.4); }
 
 .btn-primary {
@@ -300,6 +347,7 @@ input[type="date"] {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
   background: rgba(193,150,63,0.12);
   border: 1px solid rgba(193,150,63,0.4);
   border-radius: 6px;
@@ -350,10 +398,12 @@ input[type="date"] {
 .star-pos { position: relative; display: inline-block; width: 1em; font-size: 16px; line-height: 1; }
 .star-bg { color: rgba(255,255,255,0.25); }
 .star-fg { position: absolute; top: 0; left: 0; overflow: hidden; color: var(--brass-bright); white-space: nowrap; }
-.star-widget.editable .star-pos { cursor: pointer; }
-.star-click { position: absolute; top: 0; height: 100%; width: 50%; }
-.star-click-left { left: 0; }
-.star-click-right { left: 50%; }
+.star-widget.editable { gap: 4px; }
+.star-widget.editable .star-pos {
+  cursor: pointer;
+  font-size: 32px;
+  padding: 6px 2px;
+}
 .tags-cell { max-width: 220px; }
 .tag-chip {
   display: inline-block;
